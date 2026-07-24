@@ -21735,6 +21735,13 @@ var VisitReady = (() => {
     { id: "structure", label: "Build note", detail: "Doctor-ready HPI format" },
     { id: "ready", label: "Ready", detail: "Summary prepared for the visit" }
   ];
+  var languageOptions = [
+    { id: "English", label: "English", speech: "en-US", sample: sampleEntries[0].text },
+    { id: "Spanish", label: "Espa\xF1ol", speech: "es-US", sample: "Me duele el est\xF3mago desde anoche despu\xE9s de cenar. Siento ardor y n\xE1useas, pero no tengo fiebre." },
+    { id: "Hindi", label: "\u0939\u093F\u0928\u094D\u0926\u0940", speech: "hi-IN", sample: "\u0915\u0932 \u0930\u093E\u0924 \u0916\u093E\u0928\u0947 \u0915\u0947 \u092C\u093E\u0926 \u0938\u0947 \u092E\u0947\u0930\u0947 \u092A\u0947\u091F \u092E\u0947\u0902 \u091C\u0932\u0928 \u0914\u0930 \u0926\u0930\u094D\u0926 \u0939\u0948\u0964 \u0925\u094B\u0921\u093C\u093E \u092E\u0924\u0932\u0940 \u091C\u0948\u0938\u093E \u0932\u0917 \u0930\u0939\u093E \u0939\u0948, \u0932\u0947\u0915\u093F\u0928 \u092C\u0941\u0916\u093E\u0930 \u0928\u0939\u0940\u0902 \u0939\u0948\u0964" },
+    { id: "Mandarin Chinese", label: "\u4E2D\u6587", speech: "zh-CN", sample: "\u6628\u665A\u5403\u5B8C\u996D\u540E\u6211\u7684\u80C3\u5F00\u59CB\u75BC\uFF0C\u6709\u707C\u70E7\u611F\uFF0C\u4E5F\u6709\u70B9\u6076\u5FC3\uFF0C\u4F46\u6CA1\u6709\u53D1\u70E7\u3002" },
+    { id: "Arabic", label: "\u0627\u0644\u0639\u0631\u0628\u064A\u0629", speech: "ar-SA", sample: "\u0628\u062F\u0623\u062A \u0645\u0639\u062F\u062A\u064A \u062A\u0624\u0644\u0645\u0646\u064A \u0628\u0639\u062F \u0627\u0644\u0639\u0634\u0627\u0621 \u0623\u0645\u0633\u060C \u0648\u0623\u0634\u0639\u0631 \u0628\u062D\u0631\u0642\u0629 \u0648\u063A\u062B\u064A\u0627\u0646 \u0628\u0633\u064A\u0637\u060C \u0644\u0643\u0646 \u0644\u0627 \u062A\u0648\u062C\u062F \u062D\u0645\u0649." }
+  ];
   var useRemoteApi = new URLSearchParams(window.location.search).get("api") === "1";
   var useLlmHelp = useRemoteApi || new URLSearchParams(window.location.search).get("localLlm") === "1";
   var isDoctorView = window.location.pathname === "/doctor";
@@ -21744,7 +21751,7 @@ var VisitReady = (() => {
     {
       id: "start",
       title: "How do I start?",
-      answer: "Type what happened in the big text box, or use the Mic button if your browser supports voice. Then click Make doctor note."
+      answer: "Type what happened in the big text box, or use Start voice input if your browser supports speech-to-text. Then click Make doctor note."
     },
     {
       id: "images",
@@ -21769,7 +21776,7 @@ var VisitReady = (() => {
     {
       id: "mic",
       title: "Why is my mic not working?",
-      answer: "Voice works best in Chrome. If the mic does not start, allow microphone permission in the browser or type the story instead."
+      answer: "Voice works best in Chrome. If the voice button does not start, this browser may not expose speech-to-text or microphone APIs. Open the same link in Chrome, allow microphone permission, or type the story instead."
     }
   ];
   function getLocalHelpAnswer(question, context = "patient") {
@@ -21803,6 +21810,30 @@ var VisitReady = (() => {
     } catch {
     }
     return { answer: getLocalHelpAnswer(question, context), source: "Local guide fallback" };
+  }
+  async function translatePatientText(text, language) {
+    const trimmed = text.trim();
+    if (!trimmed || language === "English" || !useLlmHelp) {
+      return { translatedText: trimmed, source: language === "English" ? "Original English" : "Translation unavailable" };
+    }
+    try {
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: trimmed, language })
+      });
+      const data = await response.json();
+      if (data.translatedText) {
+        return { translatedText: data.translatedText, source: data.provider ? `${data.provider}: ${data.model}` : "Interpreter" };
+      }
+    } catch {
+    }
+    return { translatedText: trimmed, source: "Translation fallback" };
+  }
+  function getVoiceCapability() {
+    const hasSpeechApi = typeof window !== "undefined" && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+    const hasMicApi = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+    return { checked: true, hasSpeechApi, hasMicApi };
   }
   function uniq(items) {
     return [...new Set(items.filter(Boolean))];
@@ -21852,6 +21883,10 @@ var VisitReady = (() => {
     symptomMap.forEach(([label, positivePattern, negativePattern]) => {
       if (positivePattern.test(lower) && !negativePattern.test(lower)) symptoms.push(label);
     });
+    if (/\b(no|not|without|denies|do not have|don't have|dont have|does not have|doesn't have)\b.{0,24}\b(fever|temperature|chills)\b/.test(lower)) {
+      const feverIndex = symptoms.indexOf("fever");
+      if (feverIndex >= 0) symptoms.splice(feverIndex, 1);
+    }
     ["tums", "ibuprofen", "advil", "tylenol", "acetaminophen", "omeprazole", "pepcid", "metformin", "lisinopril", "coffee"].forEach((word) => {
       if (lower.includes(word)) meds.push(word.replace(/^\w/, (char) => char.toUpperCase()));
     });
@@ -21876,7 +21911,7 @@ var VisitReady = (() => {
       if (/\b(monday|tuesday|wednesday|thursday|friday|yesterday|today|night|morning|after|around|week|days)\b/i.test(sentence)) {
         timeline.push(sentence);
       }
-      if (/\b(no fever|no blood|no bleeding|no black stool|no throwing up|not crushing chest pain|no trouble breathing|not short of breath|denies fever|denies chest pain)\b/i.test(sentence)) {
+      if (/\b(no fever|no blood|no bleeding|no black stool|no throwing up|not crushing chest pain|no trouble breathing|not short of breath|denies fever|denies chest pain|do not have a fever|don't have a fever|dont have a fever|does not have a fever|doesn't have a fever)\b/i.test(sentence)) {
         redFlags.push(sentence);
       }
     });
@@ -22240,13 +22275,21 @@ var VisitReady = (() => {
     const [entrySummary, setEntrySummary] = (0, import_react.useState)(null);
     const [visitSummary, setVisitSummary] = (0, import_react.useState)(localVisit(sampleEntries));
     const [activeTab, setActiveTab] = (0, import_react.useState)("entry");
+    const [workspaceTab, setWorkspaceTab] = (0, import_react.useState)("capture");
     const [phase, setPhase] = (0, import_react.useState)("ready");
     const [voiceHelp, setVoiceHelp] = (0, import_react.useState)("Checking voice input...");
     const [recording, setRecording] = (0, import_react.useState)(false);
     const [imageAttachments, setImageAttachments] = (0, import_react.useState)([]);
     const [history, setHistory] = (0, import_react.useState)(loadHistory);
     const [sendStatus, setSendStatus] = (0, import_react.useState)("Not sent yet");
+    const [patientLanguage, setPatientLanguage] = (0, import_react.useState)("English");
+    const [translatedText, setTranslatedText] = (0, import_react.useState)("");
+    const [doctorEnglishText, setDoctorEnglishText] = (0, import_react.useState)(sampleEntries[0].text);
+    const [translationStatus, setTranslationStatus] = (0, import_react.useState)("Interpreter idle");
+    const [voiceSupported, setVoiceSupported] = (0, import_react.useState)(false);
+    const [voiceCapability, setVoiceCapability] = (0, import_react.useState)({ checked: false, hasSpeechApi: false, hasMicApi: false });
     const recognitionRef = (0, import_react.useRef)(null);
+    const voiceButtonRef = (0, import_react.useRef)(null);
     const currentStepIndex = (0, import_react.useMemo)(() => {
       if (phase === "capture" || phase === "listening") return 0;
       if (phase === "extract") return 1;
@@ -22254,15 +22297,21 @@ var VisitReady = (() => {
       return 3;
     }, [phase]);
     (0, import_react.useEffect)(() => {
+      const capability = getVoiceCapability();
+      setVoiceCapability(capability);
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) {
-        setVoiceHelp("Voice input is not available in this browser. For the live mic demo, open this app in Chrome and allow microphone access.");
+        recognitionRef.current = null;
+        setRecording(false);
+        setVoiceSupported(false);
+        setVoiceHelp(capability.hasMicApi ? "This browser can use a microphone, but does not support browser speech-to-text. Open Chrome for voice, or type the story here." : "This browser does not expose microphone or speech-to-text access to this page. Open the app in Chrome for the voice demo, or type the story here.");
         return;
       }
+      setVoiceSupported(true);
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
-      recognition.lang = "en-US";
+      recognition.lang = languageOptions.find((language) => language.id === patientLanguage)?.speech || "en-US";
       recognition.onresult = (event) => {
         let transcript = "";
         for (let index = 0; index < event.results.length; index += 1) {
@@ -22273,7 +22322,7 @@ var VisitReady = (() => {
       recognition.onend = () => {
         setRecording(false);
         setPhase("capture");
-        setVoiceHelp("Voice input is ready. Click Mic, allow microphone access, then speak naturally.");
+        setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
       };
       recognition.onerror = (event) => {
         setRecording(false);
@@ -22281,14 +22330,27 @@ var VisitReady = (() => {
         setVoiceHelp(event.error === "not-allowed" ? "Microphone access was blocked. Allow microphone access in the browser, then try again." : "Voice input stopped. You can try again or type the note instead.");
       };
       recognitionRef.current = recognition;
-      setVoiceHelp("Voice input is ready. Click Mic, allow microphone access, then speak naturally.");
-    }, []);
+      setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
+    }, [patientLanguage]);
     (0, import_react.useEffect)(() => {
       structureEntry(sampleEntries[0].text, false);
     }, []);
     (0, import_react.useEffect)(() => {
       saveHistory(history);
     }, [history]);
+    (0, import_react.useEffect)(() => {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }, [workspaceTab]);
+    (0, import_react.useEffect)(() => {
+      const button = voiceButtonRef.current;
+      if (!button) return void 0;
+      const handlePress = (event) => {
+        event.preventDefault();
+        toggleVoice();
+      };
+      button.addEventListener("pointerdown", handlePress);
+      return () => button.removeEventListener("pointerdown", handlePress);
+    }, [recording, patientLanguage, voiceSupported]);
     function addHistoryItem(type, summary, sourceText, images = []) {
       const item = {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -22310,27 +22372,37 @@ var VisitReady = (() => {
     async function structureEntry(text, addEntry = true) {
       const trimmed = text.trim();
       if (!trimmed) return;
-      if (addEntry) {
-        const liveEntry = { date: "Live demo", text: trimmed };
-        setEntries((previous) => [liveEntry, ...previous]);
-        setSelectedIndex(0);
-      }
       await runProcess(async () => {
-        const fallback = localParse(trimmed);
+        setTranslationStatus(patientLanguage === "English" ? "Original English" : "Interpreting...");
+        const interpreted = await translatePatientText(trimmed, patientLanguage);
+        const clinicalText = interpreted.translatedText || trimmed;
+        const sourceText = patientLanguage === "English" ? `Doctor English: ${clinicalText}` : `Doctor English: ${clinicalText}
+
+Original (${patientLanguage}): ${trimmed}`;
+        setTranslatedText(patientLanguage === "English" ? "" : clinicalText);
+        setDoctorEnglishText(clinicalText);
+        setTranslationStatus(interpreted.source);
+        if (addEntry) {
+          const liveEntry = { date: patientLanguage === "English" ? "Live demo" : `Live demo (${patientLanguage})`, text: clinicalText };
+          setEntries((previous) => [liveEntry, ...previous]);
+          setSelectedIndex(0);
+        }
+        const fallback = localParse(clinicalText);
         try {
-          const api = await askServer("/api/entry", { text: trimmed });
+          const api = await askServer("/api/entry", { text: clinicalText });
           if (api.result) {
             setEntrySummary(api.result);
-            if (addEntry) addHistoryItem("Today's note", api.result, trimmed, imageAttachments);
+            if (addEntry) addHistoryItem("Today's note", api.result, sourceText, imageAttachments);
           } else {
             setEntrySummary(fallback);
-            if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
+            if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
           }
         } catch {
           setEntrySummary(fallback);
-          if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
+          if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
         }
         setActiveTab("entry");
+        setWorkspaceTab("review");
       });
     }
     async function generateVisit() {
@@ -22350,13 +22422,45 @@ var VisitReady = (() => {
           addHistoryItem("Visit summary", fallback, entries.map((entry) => entry.text).join("\n\n"), imageAttachments);
         }
         setActiveTab("visit");
+        setWorkspaceTab("review");
       });
     }
     function toggleVoice() {
-      const recognition = recognitionRef.current;
-      if (!recognition) {
-        setVoiceHelp("Voice input could not start in this browser. Type the note here, or open the app in Chrome for the mic demo.");
+      const capability = getVoiceCapability();
+      setVoiceCapability(capability);
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      let recognition = recognitionRef.current;
+      if (!SpeechRecognition) {
+        recognitionRef.current = null;
+        setVoiceSupported(false);
+        setRecording(false);
+        setVoiceHelp(capability.hasMicApi ? "This browser has microphone access but no speech-to-text API. Use Chrome for the live voice demo, or type here." : "This browser does not expose microphone or speech-to-text APIs. Use Chrome for the live voice demo, or type here.");
         return;
+      }
+      if (!recognition) {
+        recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = languageOptions.find((language) => language.id === patientLanguage)?.speech || "en-US";
+        recognition.onresult = (event) => {
+          let transcript = "";
+          for (let index = 0; index < event.results.length; index += 1) {
+            transcript += event.results[index][0].transcript;
+          }
+          setEntryText(transcript.trim());
+        };
+        recognition.onend = () => {
+          setRecording(false);
+          setPhase("capture");
+          setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
+        };
+        recognition.onerror = (event) => {
+          setRecording(false);
+          setPhase("capture");
+          setVoiceHelp(event.error === "not-allowed" ? "Microphone access was blocked. Allow microphone access in the browser, then try again." : "Voice input stopped. You can try again or type the note instead.");
+        };
+        recognitionRef.current = recognition;
+        setVoiceSupported(true);
       }
       if (recording) {
         recognition.stop();
@@ -22365,7 +22469,7 @@ var VisitReady = (() => {
       try {
         setRecording(true);
         setPhase("listening");
-        setVoiceHelp("Listening now. Speak your patient story, then click Stop.");
+        setVoiceHelp("Voice button pressed. Listening now, or waiting for microphone permission.");
         recognition.start();
       } catch {
         setRecording(false);
@@ -22377,6 +22481,18 @@ var VisitReady = (() => {
       const next = (selectedIndex + 1) % entries.length;
       setSelectedIndex(next);
       setEntryText(entries[next].text);
+      setPatientLanguage("English");
+      setTranslatedText("");
+      setDoctorEnglishText(entries[next].text);
+      setTranslationStatus("Original English");
+      setPhase("capture");
+    }
+    function loadLanguageSample() {
+      const selected = languageOptions.find((language) => language.id === patientLanguage) || languageOptions[0];
+      setEntryText(selected.sample);
+      setTranslatedText("");
+      setDoctorEnglishText("");
+      setTranslationStatus(patientLanguage === "English" ? "Original English" : "Sample ready for interpreter");
       setPhase("capture");
     }
     function handleImageUpload(event) {
@@ -22403,16 +22519,20 @@ var VisitReady = (() => {
         return;
       }
       setSendStatus("Sending to doctor...");
+      const handoffSourceText = patientLanguage === "English" ? `Doctor English: ${doctorEnglishText || entryText}` : `Doctor English: ${doctorEnglishText || translatedText || "English interpretation not generated yet."}
+
+Original (${patientLanguage}): ${entryText}`;
       try {
         await postSubmission({
           patientName: "Demo Patient",
           summary,
-          sourceText: entryText,
+          sourceText: handoffSourceText,
           image: imageAttachments[0] || null,
           images: imageAttachments
         });
-        addHistoryItem("Sent to doctor", summary, entryText, imageAttachments);
+        addHistoryItem("Sent to doctor", summary, handoffSourceText, imageAttachments);
         setSendStatus("Sent to doctor inbox.");
+        setWorkspaceTab("handoff");
       } catch {
         setSendStatus("Could not send. Make sure the local server is running.");
       }
@@ -22420,11 +22540,53 @@ var VisitReady = (() => {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "shell", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(HelpBot, {}),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "workspace", "aria-label": "VisitReady demo workspace", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "masthead", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "eyebrow", children: "Voice-first clinic prep" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "VisitReady" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "tagline", children: "Say what happened in your own words. Get a clean note for your doctor." })
-        ] }) }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "masthead", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "masthead-copy", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "brand-lockup", "aria-label": "VisitReady medical logo", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "doctor-logo", "aria-hidden": "true", children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "doctor-logo-cross" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "doctor-logo-line one" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "doctor-logo-line two" })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Clinical AI Intake" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "eyebrow", children: "Voice-first clinic prep" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "VisitReady" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "tagline", children: "Say what happened in your own words. Get a clean note for your doctor." }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "mission-chips", "aria-label": "Core capabilities", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "English doctor output" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Images supported" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "Local LLM ready" })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "mission-visual", "aria-hidden": "true", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "visual-grid", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {})
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "scan-panel", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "CLINICAL PACKET" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: phase === "ready" ? "READY" : "PROCESSING" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: patientLanguage === "English" ? "INPUT: EN" : `INPUT: ${patientLanguage.toUpperCase()}` })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "signal-rail", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {}),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {})
+            ] })
+          ] })
+        ] }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "steps", "aria-label": "Four step workflow", children: processSteps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `step ${index <= currentStepIndex ? "active" : ""}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: index + 1 }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
@@ -22432,26 +22594,76 @@ var VisitReady = (() => {
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: step.detail })
           ] })
         ] }, step.id)) }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "grid", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "input-panel", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "panel-heading", children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("nav", { className: "workspace-tabs", "aria-label": "Workspace sections", children: [
+          ["capture", "Capture / Voice"],
+          ["review", "Review"],
+          ["history", "History"],
+          ["handoff", "Handoff"]
+        ].map(([id, label]) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `workspace-tab ${workspaceTab === id ? "active" : ""}`, type: "button", onClick: () => setWorkspaceTab(id), children: label }, id)) }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "tab-workspace", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `input-panel tab-panel ${workspaceTab === "capture" ? "" : "hidden"}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "panel-heading", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Start here" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Tell the story once" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Use the microphone or type in the patient's strongest language." })
+            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "language-panel", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Start here" }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Tell the story once" }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Use the microphone or type like you are talking to a friend." })
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Interpreter" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "Cross-language intake" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "microcopy", children: "Patient input can be any supported language. Doctor output is always English." })
               ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `icon-button ${recording ? "recording" : ""}`, type: "button", onClick: toggleVoice, title: recording ? "Stop voice input" : "Start voice input", "aria-label": recording ? "Stop voice input" : "Start voice input", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { "aria-hidden": "true", children: recording ? "Stop" : "Mic" }) })
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("label", { children: [
+                "Patient language",
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("select", { value: patientLanguage, onChange: (event) => {
+                  setPatientLanguage(event.target.value);
+                  setTranslatedText("");
+                  setTranslationStatus(event.target.value === "English" ? "Original English" : "Interpreter ready");
+                }, children: languageOptions.map((language) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("option", { value: language.id, children: language.label }, language.id)) })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "secondary", onClick: loadLanguageSample, children: "Use language sample" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "voice-control", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+                "button",
+                {
+                  ref: voiceButtonRef,
+                  className: `voice-button ${recording ? "recording" : ""}`,
+                  type: "button",
+                  onKeyDown: (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      toggleVoice();
+                    }
+                  },
+                  children: recording ? "Stop voice input" : "Start voice input"
+                }
+              ),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `voice-diagnostic ${voiceCapability.hasSpeechApi ? "ok" : "blocked"}`, children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: recording ? "Listening now" : voiceCapability.hasSpeechApi ? "Voice available" : "Voice unavailable here" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: voiceCapability.hasSpeechApi ? "Tap once, allow microphone access, then speak naturally." : voiceCapability.hasMicApi ? "Mic exists, but browser speech-to-text is missing. Open in Chrome." : "This browser blocks mic/speech APIs. Open in Chrome or type." })
+              ] })
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", { className: "sr-only", htmlFor: "entryText", children: "Patient journal entry" }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("textarea", { id: "entryText", spellCheck: "true", value: entryText, onChange: (event) => {
               setEntryText(event.target.value);
               setPhase("capture");
-            }, placeholder: "Example: My stomach started hurting after dinner. It felt like burning. I took Tums and it helped a little." }),
+              setTranslatedText("");
+            }, placeholder: "Example: Me duele el est\xF3mago desde anoche, or: My stomach started hurting after dinner." }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "actions", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "secondary", onClick: loadSample, children: "Try another example" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => structureEntry(entryText), disabled: phase === "extract" || phase === "structure", children: phase === "extract" || phase === "structure" ? "Working..." : "Make doctor note" })
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "voice-help", "aria-live": "polite", children: voiceHelp }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { className: "voice-help", "aria-live": "polite", children: [
+              voiceHelp,
+              " Interpreter: ",
+              translationStatus,
+              "."
+            ] }),
+            translatedText && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "translation-preview animated-panel", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Interpreter English" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: translatedText })
+            ] }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "image-upload", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Photo support" }),
@@ -22489,7 +22701,7 @@ var VisitReady = (() => {
               entry.text
             ] }) }, `${entry.date}-${index}`)) })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "output-panel", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `output-panel tab-panel ${workspaceTab === "review" ? "" : "hidden"}`, children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "output-heading", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Doctor-ready output" }),
@@ -22504,19 +22716,21 @@ var VisitReady = (() => {
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "tabs", role: "tablist", "aria-label": "Summary views", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `tab ${activeTab === "entry" ? "active" : ""}`, type: "button", onClick: () => setActiveTab("entry"), children: "Today's note" }),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `tab ${activeTab === "visit" ? "active" : ""}`, type: "button", onClick: () => setActiveTab("visit"), children: "Visit summary" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `tab ${activeTab === "history" ? "active" : ""}`, type: "button", onClick: () => setActiveTab("history"), children: "History" })
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "handoff-bar", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Doctor handoff" }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: sendStatus })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: sendToDoctor, children: "Send to Doctor" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { className: "secondary-link", href: "/doctor", children: "Open inbox" })
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "tab", type: "button", onClick: () => setWorkspaceTab("history"), children: "History" })
             ] }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: activeTab === "entry" ? "" : "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SummaryView, { summary: entrySummary }) }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: activeTab === "visit" ? "" : "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SummaryView, { summary: visitSummary }) }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: activeTab === "history" ? "" : "hidden", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "history-list animated-panel", children: history.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "empty", children: "No saved visit history yet. Make a note or send one to the doctor, then it will appear here." }) : history.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: "history-card", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "review-actions", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "secondary", onClick: () => setWorkspaceTab("capture"), children: "Use voice input" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => setWorkspaceTab("handoff"), children: "Continue to handoff" })
+            ] })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `output-panel tab-panel ${workspaceTab === "history" ? "" : "hidden"}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "output-heading", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Saved notes" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Patient history" })
+            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "history-list animated-panel", children: history.length === 0 ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "empty", children: "No saved visit history yet. Make a note or send one to the doctor, then it will appear here." }) : history.map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("article", { className: "history-card", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "history-card-head", children: [
                 /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
                   /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "meta", children: new Date(item.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) }),
@@ -22529,7 +22743,38 @@ var VisitReady = (() => {
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { src: image.dataUrl, alt: image.name || "Saved patient attachment" }),
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("figcaption", { children: image.name || "Patient image" })
               ] }, image.dataUrl)) })
-            ] }, item.id)) }) })
+            ] }, item.id)) })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `output-panel tab-panel ${workspaceTab === "handoff" ? "" : "hidden"}`, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "output-heading", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Doctor handoff" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Send the packet" })
+            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "handoff-bar handoff-focused", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Status" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: sendStatus })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: sendToDoctor, children: "Send to Doctor" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { className: "secondary-link", href: "/doctor", children: "Open inbox" })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SummaryView, { summary: activeTab === "visit" ? visitSummary : entrySummary }),
+            imageAttachments.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "section image-section", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("h3", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "pill blue", children: "Images" }),
+                "Attached Images"
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "image-grid", children: imageAttachments.map((image) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("figure", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", { src: image.dataUrl, alt: image.name || "Patient attachment" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("figcaption", { children: image.name || "Patient image" })
+              ] }, image.dataUrl)) })
+            ] }),
+            translatedText && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SummarySection, { badge: "Lang", tone: "blue", title: "Interpreter Context", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("p", { children: [
+              "Original language: ",
+              patientLanguage,
+              ". English interpretation: ",
+              translatedText
+            ] }) })
           ] })
         ] })
       ] })
