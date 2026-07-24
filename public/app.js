@@ -22288,6 +22288,7 @@ var VisitReady = (() => {
     const [translationStatus, setTranslationStatus] = (0, import_react.useState)("Interpreter idle");
     const [voiceSupported, setVoiceSupported] = (0, import_react.useState)(false);
     const [voiceCapability, setVoiceCapability] = (0, import_react.useState)({ checked: false, hasSpeechApi: false, hasMicApi: false });
+    const [showGuide, setShowGuide] = (0, import_react.useState)(false);
     const recognitionRef = (0, import_react.useRef)(null);
     const voiceButtonRef = (0, import_react.useRef)(null);
     const currentStepIndex = (0, import_react.useMemo)(() => {
@@ -22362,7 +22363,11 @@ var VisitReady = (() => {
       };
       setHistory((previous) => [item, ...previous].slice(0, 20));
     }
-    async function runProcess(work) {
+    async function runProcess(work, animate = true) {
+      if (!animate) {
+        await work();
+        return;
+      }
       setPhase("extract");
       await new Promise((resolve) => setTimeout(resolve, 320));
       setPhase("structure");
@@ -22402,8 +22407,10 @@ Original (${patientLanguage}): ${trimmed}`;
           if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
         }
         setActiveTab("entry");
-        setWorkspaceTab("review");
-      });
+        if (addEntry) {
+          setWorkspaceTab("review");
+        }
+      }, addEntry);
     }
     async function generateVisit() {
       await runProcess(async () => {
@@ -22595,18 +22602,21 @@ Original (${patientLanguage}): ${entryText}`;
           ] })
         ] }, step.id)) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("nav", { className: "workspace-tabs", "aria-label": "Workspace sections", children: [
-          ["capture", "Capture / Voice"],
+          ["capture", "Describe symptoms"],
           ["review", "Review"],
           ["history", "History"],
           ["handoff", "Handoff"]
         ].map(([id, label]) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: `workspace-tab ${workspaceTab === id ? "active" : ""}`, type: "button", onClick: () => setWorkspaceTab(id), children: label }, id)) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "tab-workspace", children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `input-panel tab-panel ${workspaceTab === "capture" ? "" : "hidden"}`, children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "panel-heading", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Start here" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Tell the story once" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Use the microphone or type in the patient's strongest language." })
-            ] }) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "panel-heading", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Start here" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "Tell the story once" }),
+                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: "Use the microphone or type in the patient's strongest language." })
+              ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "need-help-button", onClick: () => setShowGuide(true), children: "Need help?" })
+            ] }),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "language-panel", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Interpreter" }),
@@ -22680,26 +22690,7 @@ Original (${patientLanguage}): ${entryText}`;
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: image.name }),
                 /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "text-button", onClick: () => setImageAttachments((previous) => previous.filter((item) => item.dataUrl !== image.dataUrl)), children: "Remove" })
               ] })
-            ] }, image.dataUrl)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "pipeline", "aria-label": "Current processing state", children: processSteps.slice(1).map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `pipeline-node ${index + 1 <= currentStepIndex ? "on" : ""}`, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: step.label })
-            ] }, step.id)) }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "entries-header", children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Saved examples" }),
-                /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: "This week" })
-              ] }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "secondary", onClick: generateVisit, disabled: phase === "extract" || phase === "structure", children: "Prepare visit" })
-            ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "entries", children: entries.map((entry, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: `entry-card ${index === selectedIndex ? "active" : ""}`, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { type: "button", onClick: () => {
-              setSelectedIndex(index);
-              setEntryText(entry.text);
-              setPhase("capture");
-            }, children: [
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "meta", children: entry.date }),
-              entry.text
-            ] }) }, `${entry.date}-${index}`)) })
+            ] }, image.dataUrl)) })
           ] }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: `output-panel tab-panel ${workspaceTab === "review" ? "" : "hidden"}`, children: [
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "output-heading", children: [
@@ -22777,7 +22768,56 @@ Original (${patientLanguage}): ${entryText}`;
             ] }) })
           ] })
         ] })
-      ] })
+      ] }),
+      showGuide && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "guide-overlay", role: "dialog", "aria-modal": "true", "aria-label": "How VisitReady works", onClick: () => setShowGuide(false), children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "guide-modal animated-panel", onClick: (event) => event.stopPropagation(), children: [
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "guide-head", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Quick guide" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "How VisitReady works" })
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", className: "guide-close", onClick: () => setShowGuide(false), "aria-label": "Close guide", children: "\u2715" })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("ol", { className: "guide-steps", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Describe your symptoms." }),
+            " Type in the box or tap ",
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: "Start voice input" }),
+            " and speak \u2014 in any supported language."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Make the doctor note." }),
+            " Click ",
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: "Make doctor note" }),
+            " and VisitReady turns your words into a clean, structured summary."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Review it." }),
+            " Open the ",
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: "Review" }),
+            " tab to check the summary and add injury photos if useful."
+          ] }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("li", { children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: "Send to your doctor." }),
+            " Use the ",
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("em", { children: "Handoff" }),
+            " tab to send the packet to the doctor inbox."
+          ] })
+        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "guide-examples", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Example: a week of symptoms" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "microcopy", children: "Not sure what to write? Tap any day to load it into the box and see how it works." }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "entries", children: entries.map((entry, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("article", { className: "entry-card", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { type: "button", onClick: () => {
+            setSelectedIndex(index);
+            setEntryText(entry.text);
+            setPhase("capture");
+            setWorkspaceTab("capture");
+            setShowGuide(false);
+          }, children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "meta", children: entry.date }),
+            entry.text
+          ] }) }, `guide-${entry.date}-${index}`)) })
+        ] })
+      ] }) })
     ] });
   }
   (0, import_client.createRoot)(document.getElementById("root")).render(isDoctorView ? /* @__PURE__ */ (0, import_jsx_runtime.jsx)(DoctorDashboard, {}) : /* @__PURE__ */ (0, import_jsx_runtime.jsx)(App, {}));

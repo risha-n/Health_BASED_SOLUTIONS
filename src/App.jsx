@@ -670,6 +670,7 @@ function App() {
   const [translationStatus, setTranslationStatus] = useState("Interpreter idle");
   const [voiceSupported, setVoiceSupported] = useState(false);
   const [voiceCapability, setVoiceCapability] = useState({ checked: false, hasSpeechApi: false, hasMicApi: false });
+  const [showGuide, setShowGuide] = useState(false);
   const recognitionRef = useRef(null);
   const voiceButtonRef = useRef(null);
 
@@ -759,7 +760,13 @@ function App() {
     setHistory(previous => [item, ...previous].slice(0, 20));
   }
 
-  async function runProcess(work) {
+  async function runProcess(work, animate = true) {
+    // The silent sample pre-load runs work without touching the step phases,
+    // so the timeline stays fully lit instead of flickering back to gray.
+    if (!animate) {
+      await work();
+      return;
+    }
     setPhase("extract");
     await new Promise(resolve => setTimeout(resolve, 320));
     setPhase("structure");
@@ -803,8 +810,12 @@ function App() {
         if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
       }
       setActiveTab("entry");
-      setWorkspaceTab("review");
-    });
+      // Only jump to Review for a real user action, not the initial
+      // background pre-load of the sample note.
+      if (addEntry) {
+        setWorkspaceTab("review");
+      }
+    }, addEntry);
   }
 
   async function generateVisit() {
@@ -1002,7 +1013,7 @@ function App() {
 
         <nav className="workspace-tabs" aria-label="Workspace sections">
           {[
-            ["capture", "Capture / Voice"],
+            ["capture", "Describe symptoms"],
             ["review", "Review"],
             ["history", "History"],
             ["handoff", "Handoff"]
@@ -1021,6 +1032,7 @@ function App() {
                 <h2>Tell the story once</h2>
                 <p>Use the microphone or type in the patient&apos;s strongest language.</p>
               </div>
+              <button type="button" className="need-help-button" onClick={() => setShowGuide(true)}>Need help?</button>
             </div>
 
             <div className="language-panel">
@@ -1108,27 +1120,6 @@ function App() {
               </div>
             )}
 
-            <div className="pipeline" aria-label="Current processing state">
-              {processSteps.slice(1).map((step, index) => (
-                <div className={`pipeline-node ${index + 1 <= currentStepIndex ? "on" : ""}`} key={step.id}>
-                  <span></span><p>{step.label}</p>
-                </div>
-              ))}
-            </div>
-
-            <div className="entries-header">
-              <div><p className="section-label">Saved examples</p><h3>This week</h3></div>
-              <button type="button" className="secondary" onClick={generateVisit} disabled={phase === "extract" || phase === "structure"}>Prepare visit</button>
-            </div>
-            <div className="entries">
-              {entries.map((entry, index) => (
-                <article className={`entry-card ${index === selectedIndex ? "active" : ""}`} key={`${entry.date}-${index}`}>
-                  <button type="button" onClick={() => { setSelectedIndex(index); setEntryText(entry.text); setPhase("capture"); }}>
-                    <span className="meta">{entry.date}</span>{entry.text}
-                  </button>
-                </article>
-              ))}
-            </div>
           </section>
 
           <section className={`output-panel tab-panel ${workspaceTab === "review" ? "" : "hidden"}`}>
@@ -1215,6 +1206,41 @@ function App() {
           </section>
         </div>
       </section>
+
+      {showGuide && (
+        <div className="guide-overlay" role="dialog" aria-modal="true" aria-label="How VisitReady works" onClick={() => setShowGuide(false)}>
+          <div className="guide-modal animated-panel" onClick={event => event.stopPropagation()}>
+            <div className="guide-head">
+              <div>
+                <p className="section-label">Quick guide</p>
+                <h2>How VisitReady works</h2>
+              </div>
+              <button type="button" className="guide-close" onClick={() => setShowGuide(false)} aria-label="Close guide">✕</button>
+            </div>
+
+            <ol className="guide-steps">
+              <li><strong>Describe your symptoms.</strong> Type in the box or tap <em>Start voice input</em> and speak — in any supported language.</li>
+              <li><strong>Make the doctor note.</strong> Click <em>Make doctor note</em> and VisitReady turns your words into a clean, structured summary.</li>
+              <li><strong>Review it.</strong> Open the <em>Review</em> tab to check the summary and add injury photos if useful.</li>
+              <li><strong>Send to your doctor.</strong> Use the <em>Handoff</em> tab to send the packet to the doctor inbox.</li>
+            </ol>
+
+            <div className="guide-examples">
+              <p className="section-label">Example: a week of symptoms</p>
+              <p className="microcopy">Not sure what to write? Tap any day to load it into the box and see how it works.</p>
+              <div className="entries">
+                {entries.map((entry, index) => (
+                  <article className="entry-card" key={`guide-${entry.date}-${index}`}>
+                    <button type="button" onClick={() => { setSelectedIndex(index); setEntryText(entry.text); setPhase("capture"); setWorkspaceTab("capture"); setShowGuide(false); }}>
+                      <span className="meta">{entry.date}</span>{entry.text}
+                    </button>
+                  </article>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
