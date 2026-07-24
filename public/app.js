@@ -21739,6 +21739,7 @@ var VisitReady = (() => {
   var useLlmHelp = useRemoteApi || new URLSearchParams(window.location.search).get("localLlm") === "1";
   var isDoctorView = window.location.pathname === "/doctor";
   var HISTORY_KEY = "visitready.patientHistory";
+  var HELP_CHATS_KEY = "visitready.helpChats";
   var helpTopics = [
     {
       id: "start",
@@ -21769,11 +21770,6 @@ var VisitReady = (() => {
       id: "mic",
       title: "Why is my mic not working?",
       answer: "Voice works best in Chrome. If the mic does not start, allow microphone permission in the browser or type the story instead."
-    },
-    {
-      id: "local",
-      title: "What is Live local mode?",
-      answer: "Live local mode means the demo runs without paid API calls. It still accepts new patient text and creates a fresh structured note."
     }
   ];
   function getLocalHelpAnswer(question, context = "patient") {
@@ -21785,12 +21781,11 @@ var VisitReady = (() => {
       return context === "doctor" ? topicById("doctor") : `${topicById("send")} ${topicById("doctor")}`;
     }
     if (/\b(mic|microphone|voice|talk|speak|dictate|record)\b/.test(lower)) return topicById("mic");
-    if (/\b(free|local|api|quota|pay|openai|chatgpt|llm)\b/.test(lower)) return topicById("local");
     if (/\b(start|begin|use|demo|workflow|first)\b/.test(lower)) return topicById("start");
     if (/\b(diagnos|treat|medicine|medication|emergency|urgent|should i)\b/.test(lower)) {
       return "I can help you document what happened for a clinician, but I cannot give medical advice or diagnoses. Type the symptoms, add images if useful, make a doctor note, and contact a clinician for medical decisions.";
     }
-    return "I can help with starting a note, adding injury images, finding History, sending to the doctor inbox, microphone issues, and Live local mode. Try asking: How do I send this to my doctor?";
+    return "I can help with starting a note, adding injury images, finding History, sending to the doctor inbox, and microphone issues. Try asking: How do I send this to my doctor?";
   }
   async function askHelpBot(question, context) {
     if (!useLlmHelp) {
@@ -21958,73 +21953,202 @@ var VisitReady = (() => {
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(SummarySection, { badge: "Prep", tone: "blue", title: "Likely Doctor Questions", children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)("ul", { children: (summary.doctorQuestions || []).map((item) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("li", { children: item }, item)) }) })
     ] });
   }
+  var helpMessageSeq = 0;
+  function nextMessageId() {
+    helpMessageSeq += 1;
+    return `msg-${Date.now().toString(36)}-${helpMessageSeq}`;
+  }
+  function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  function loadHelpChats() {
+    try {
+      const chats = JSON.parse(localStorage.getItem(HELP_CHATS_KEY) || "[]");
+      return Array.isArray(chats) ? chats : [];
+    } catch {
+      return [];
+    }
+  }
+  function saveHelpChats(chats) {
+    try {
+      localStorage.setItem(HELP_CHATS_KEY, JSON.stringify(chats.slice(0, 30)));
+    } catch {
+    }
+  }
+  function relativeTime(timestamp) {
+    const diff = Date.now() - timestamp;
+    const mins = Math.round(diff / 6e4);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return `${hours} hr ago`;
+    const days = Math.round(hours / 24);
+    return `${days} day${days === 1 ? "" : "s"} ago`;
+  }
   function HelpBot({ context = "patient" }) {
     const [open, setOpen] = (0, import_react.useState)(false);
-    const [selectedTopicId, setSelectedTopicId] = (0, import_react.useState)(context === "doctor" ? "doctor" : "start");
     const [question, setQuestion] = (0, import_react.useState)("");
-    const [customAnswer, setCustomAnswer] = (0, import_react.useState)(null);
+    const [messages, setMessages] = (0, import_react.useState)([]);
+    const [chats, setChats] = (0, import_react.useState)(() => loadHelpChats());
+    const [showHistory, setShowHistory] = (0, import_react.useState)(false);
+    const [typingDots, setTypingDots] = (0, import_react.useState)(false);
     const [asking, setAsking] = (0, import_react.useState)(false);
-    const [guideStatus, setGuideStatus] = (0, import_react.useState)(useLlmHelp ? "LLM help enabled" : "Local guide active");
-    const apiHelpHref = `${window.location.pathname}?api=1`;
-    const localHelpHref = `${window.location.pathname}?localLlm=1`;
-    const selectedTopic = helpTopics.find((topic) => topic.id === selectedTopicId) || helpTopics[0];
-    const visibleTopics = context === "doctor" ? helpTopics.filter((topic) => ["doctor", "send", "images", "local"].includes(topic.id)) : helpTopics;
-    async function handleQuestionSubmit(event) {
-      event.preventDefault();
-      const trimmed = question.trim();
-      if (!trimmed) return;
+    const aliveRef = (0, import_react.useRef)(true);
+    const threadRef = (0, import_react.useRef)(null);
+    const messagesRef = (0, import_react.useRef)(messages);
+    const currentIdRef = (0, import_react.useRef)(null);
+    const started = messages.length > 0;
+    const visibleTopics = context === "doctor" ? helpTopics.filter((topic) => ["doctor", "send", "images"].includes(topic.id)) : helpTopics;
+    (0, import_react.useEffect)(() => () => {
+      aliveRef.current = false;
+    }, []);
+    (0, import_react.useEffect)(() => {
+      messagesRef.current = messages;
+    }, [messages]);
+    (0, import_react.useEffect)(() => {
+      const node = threadRef.current;
+      if (node && !showHistory) node.scrollTop = node.scrollHeight;
+    }, [messages, typingDots, open, showHistory]);
+    function persistChat(msgs) {
+      if (!msgs.length) return;
+      let id = currentIdRef.current;
+      if (!id) {
+        id = nextMessageId();
+        currentIdRef.current = id;
+      }
+      const firstUser = msgs.find((msg) => msg.role === "user");
+      const title = (firstUser?.text || "New chat").slice(0, 48);
+      setChats((prev) => {
+        const next = [{ id, title, messages: msgs, updatedAt: Date.now() }, ...prev.filter((chat) => chat.id !== id)];
+        saveHelpChats(next);
+        return next;
+      });
+    }
+    function startNewChat() {
+      currentIdRef.current = null;
+      setMessages([]);
+      setQuestion("");
+      setShowHistory(false);
+    }
+    function openChat(id) {
+      const chat = chats.find((item) => item.id === id);
+      if (!chat) return;
+      currentIdRef.current = id;
+      setMessages(chat.messages);
+      setShowHistory(false);
+    }
+    function deleteChat(id, event) {
+      event.stopPropagation();
+      setChats((prev) => {
+        const next = prev.filter((chat) => chat.id !== id);
+        saveHelpChats(next);
+        return next;
+      });
+      if (currentIdRef.current === id) startNewChat();
+    }
+    async function sendMessage(text) {
+      const trimmed = text.trim();
+      if (!trimmed || asking) return;
+      setQuestion("");
+      setShowHistory(false);
       setAsking(true);
-      setGuideStatus(useLlmHelp ? "Asking LLM..." : "Checking guide...");
+      const userMsg = { id: nextMessageId(), role: "user", text: trimmed };
+      let working = [...messagesRef.current, userMsg];
+      setMessages(working);
+      persistChat(working);
       const result = await askHelpBot(trimmed, context);
-      setCustomAnswer({ question: trimmed, answer: result.answer });
-      setGuideStatus(result.source);
+      if (!aliveRef.current) return;
+      setTypingDots(true);
+      await delay(900);
+      if (!aliveRef.current) return;
+      setTypingDots(false);
+      const botId = nextMessageId();
+      working = [...working, { id: botId, role: "bot", text: "" }];
+      setMessages(working);
+      const full = result.answer;
+      const step = full.length > 220 ? 3 : 1;
+      for (let i = step; i < full.length + step; i += step) {
+        await delay(14);
+        if (!aliveRef.current) return;
+        const shown = full.slice(0, i);
+        setMessages((prev) => prev.map((msg) => msg.id === botId ? { ...msg, text: shown } : msg));
+      }
+      const finalMsgs = working.map((msg) => msg.id === botId ? { ...msg, text: full } : msg);
+      persistChat(finalMsgs);
       setAsking(false);
     }
+    function handleQuestionSubmit(event) {
+      event.preventDefault();
+      sendMessage(question);
+    }
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("aside", { className: `helpbot ${open ? "open" : ""}`, "aria-label": "VisitReady help assistant", children: [
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "helpbot-toggle", type: "button", onClick: () => setOpen((value) => !value), "aria-expanded": open, children: useLlmHelp ? "AI Guide: LLM" : "AI Guide" }),
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+        "button",
+        {
+          className: "helpbot-toggle",
+          type: "button",
+          onClick: () => setOpen((value) => !value),
+          "aria-expanded": open,
+          "aria-label": open ? "Close AI Guide" : "Open AI Guide",
+          children: open ? "\u2715" : "\u{1F4AC}"
+        }
+      ),
       open && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-panel animated-panel", children: [
         /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-head", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Product guide" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "AI usage assistant" })
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "button",
+            {
+              className: `helpbot-icon-btn ${showHistory ? "active" : ""}`,
+              type: "button",
+              onClick: () => setShowHistory((value) => !value),
+              "aria-label": "Chat history",
+              title: "Chat history",
+              children: "\u{1F558}"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h2", { children: "AI Guide" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-head-actions", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "helpbot-icon-btn", type: "button", onClick: startNewChat, "aria-label": "New chat", title: "New chat", children: "\uFF0B" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "helpbot-icon-btn", type: "button", onClick: () => setOpen(false), "aria-label": "Close", title: "Close", children: "\u2715" })
+          ] })
+        ] }),
+        showHistory ? /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-body helpbot-history", children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Chat history" }),
+          chats.length === 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "helpbot-history-empty", children: "No saved chats yet." }),
+          chats.map((chat) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", { className: "helpbot-history-item", type: "button", onClick: () => openChat(chat.id), children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "helpbot-history-title", children: chat.title }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "helpbot-history-meta", children: relativeTime(chat.updatedAt) }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "helpbot-history-delete", role: "button", "aria-label": "Delete chat", onClick: (event) => deleteChat(chat.id, event), children: "\u2715" })
+          ] }, chat.id))
+        ] }) : /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-body", ref: threadRef, children: [
+          !started && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-intro", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-faq", children: [
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "Common questions" }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "helpbot-topics", children: visibleTopics.map((topic) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "button", onClick: () => sendMessage(topic.title), children: topic.title }, topic.id)) })
+            ] }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "helpbot-bubble bot", children: "Hi there \u{1F44B}" }),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "helpbot-bubble bot", children: "What can I help you with?" })
           ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: "text-button", type: "button", onClick: () => setOpen(false), children: "Close" })
+          messages.map((msg) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: `helpbot-bubble ${msg.role}`, children: msg.text }, msg.id)),
+          typingDots && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-bubble bot typing", "aria-label": "AI Guide is typing", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
+            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {})
+          ] })
         ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `helpbot-mode ${useLlmHelp ? "remote" : "local"}`, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: useLlmHelp ? "LLM mode" : "Local mode" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: useLlmHelp ? "Free-form questions route to OpenAI if a key exists, or a local Ollama/LM Studio model if one is running." : "Free FAQ fallback is active. Open local LLM mode if you have Ollama or LM Studio running." }),
-          !useLlmHelp && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { href: localHelpHref, children: "Open local LLM mode" }),
-          !useLlmHelp && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("a", { href: apiHelpHref, children: "Open OpenAI mode" })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("form", { className: "helpbot-form", onSubmit: handleQuestionSubmit, children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("label", { htmlFor: `help-question-${context}`, children: "Ask anything about using VisitReady" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
-              "input",
-              {
-                id: `help-question-${context}`,
-                value: question,
-                onChange: (event) => setQuestion(event.target.value),
-                placeholder: "Example: how do I show my doctor the images?"
-              }
-            ),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", disabled: asking, children: asking ? "Asking..." : "Ask" })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: guideStatus })
-        ] }),
-        customAnswer && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "helpbot-answer helpbot-custom", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: customAnswer.question }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: customAnswer.answer })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "helpbot-faq", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "section-label", children: "FAQ" }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "helpbot-topics", children: visibleTopics.map((topic) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { className: topic.id === selectedTopicId ? "active" : "", type: "button", onClick: () => setSelectedTopicId(topic.id), children: topic.title }, topic.id)) })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "helpbot-answer", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h3", { children: selectedTopic.title }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { children: selectedTopic.answer })
-        ] }),
-        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "voice-help", children: "This guide explains how to use VisitReady. It does not provide medical advice." })
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("form", { className: "helpbot-form", onSubmit: handleQuestionSubmit, children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)(
+            "input",
+            {
+              id: `help-question-${context}`,
+              "aria-label": "Ask anything about using VisitReady",
+              value: question,
+              onChange: (event) => setQuestion(event.target.value),
+              placeholder: "Ask anything about using VisitReady\u2026"
+            }
+          ),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("button", { type: "submit", disabled: asking, "aria-label": "Send", children: asking ? "\u2026" : "\u2191" })
+        ] }) })
       ] })
     ] });
   }
@@ -22117,7 +22241,6 @@ var VisitReady = (() => {
     const [visitSummary, setVisitSummary] = (0, import_react.useState)(localVisit(sampleEntries));
     const [activeTab, setActiveTab] = (0, import_react.useState)("entry");
     const [phase, setPhase] = (0, import_react.useState)("ready");
-    const [apiStatus, setApiStatus] = (0, import_react.useState)(useRemoteApi ? "OpenAI ready" : "Live local mode");
     const [voiceHelp, setVoiceHelp] = (0, import_react.useState)("Checking voice input...");
     const [recording, setRecording] = (0, import_react.useState)(false);
     const [imageAttachments, setImageAttachments] = (0, import_react.useState)([]);
@@ -22197,16 +22320,13 @@ var VisitReady = (() => {
         try {
           const api = await askServer("/api/entry", { text: trimmed });
           if (api.result) {
-            setApiStatus(api.models ? "GPT-5.6 pair" : "OpenAI API");
             setEntrySummary(api.result);
             if (addEntry) addHistoryItem("Today's note", api.result, trimmed, imageAttachments);
           } else {
-            setApiStatus("Live local mode");
             setEntrySummary(fallback);
             if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
           }
         } catch {
-          setApiStatus("Live local mode");
           setEntrySummary(fallback);
           if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
         }
@@ -22219,16 +22339,13 @@ var VisitReady = (() => {
         try {
           const api = await askServer("/api/visit", { entries });
           if (api.result) {
-            setApiStatus(api.models ? "GPT-5.6 pair" : "OpenAI API");
             setVisitSummary(api.result);
             addHistoryItem("Visit summary", api.result, entries.map((entry) => entry.text).join("\n\n"), imageAttachments);
           } else {
-            setApiStatus("Live local mode");
             setVisitSummary(fallback);
             addHistoryItem("Visit summary", fallback, entries.map((entry) => entry.text).join("\n\n"), imageAttachments);
           }
         } catch {
-          setApiStatus("Live local mode");
           setVisitSummary(fallback);
           addHistoryItem("Visit summary", fallback, entries.map((entry) => entry.text).join("\n\n"), imageAttachments);
         }
@@ -22303,17 +22420,11 @@ var VisitReady = (() => {
     return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("main", { className: "shell", children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)(HelpBot, {}),
       /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("section", { className: "workspace", "aria-label": "VisitReady demo workspace", children: [
-        /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("header", { className: "masthead", children: [
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "eyebrow", children: "Voice-first clinic prep" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "VisitReady" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "tagline", children: "Say what happened in your own words. Get a clean note for your doctor." })
-          ] }),
-          /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "status", "aria-live": "polite", children: [
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { className: "status-dot" }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: apiStatus })
-          ] })
-        ] }),
+        /* @__PURE__ */ (0, import_jsx_runtime.jsx)("header", { className: "masthead", children: /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "eyebrow", children: "Voice-first clinic prep" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("h1", { children: "VisitReady" }),
+          /* @__PURE__ */ (0, import_jsx_runtime.jsx)("p", { className: "tagline", children: "Say what happened in your own words. Get a clean note for your doctor." })
+        ] }) }),
         /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "steps", "aria-label": "Four step workflow", children: processSteps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `step ${index <= currentStepIndex ? "active" : ""}`, children: [
           /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: index + 1 }),
           /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { children: [

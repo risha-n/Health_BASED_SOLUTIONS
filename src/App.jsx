@@ -20,6 +20,7 @@ const useRemoteApi = new URLSearchParams(window.location.search).get("api") === 
 const useLlmHelp = useRemoteApi || new URLSearchParams(window.location.search).get("localLlm") === "1";
 const isDoctorView = window.location.pathname === "/doctor";
 const HISTORY_KEY = "visitready.patientHistory";
+const HELP_CHATS_KEY = "visitready.helpChats";
 const helpTopics = [
   {
     id: "start",
@@ -50,11 +51,6 @@ const helpTopics = [
     id: "mic",
     title: "Why is my mic not working?",
     answer: "Voice works best in Chrome. If the mic does not start, allow microphone permission in the browser or type the story instead."
-  },
-  {
-    id: "local",
-    title: "What is Live local mode?",
-    answer: "Live local mode means the demo runs without paid API calls. It still accepts new patient text and creates a fresh structured note."
   }
 ];
 
@@ -68,13 +64,12 @@ function getLocalHelpAnswer(question, context = "patient") {
     return context === "doctor" ? topicById("doctor") : `${topicById("send")} ${topicById("doctor")}`;
   }
   if (/\b(mic|microphone|voice|talk|speak|dictate|record)\b/.test(lower)) return topicById("mic");
-  if (/\b(free|local|api|quota|pay|openai|chatgpt|llm)\b/.test(lower)) return topicById("local");
   if (/\b(start|begin|use|demo|workflow|first)\b/.test(lower)) return topicById("start");
   if (/\b(diagnos|treat|medicine|medication|emergency|urgent|should i)\b/.test(lower)) {
     return "I can help you document what happened for a clinician, but I cannot give medical advice or diagnoses. Type the symptoms, add images if useful, make a doctor note, and contact a clinician for medical decisions.";
   }
 
-  return "I can help with starting a note, adding injury images, finding History, sending to the doctor inbox, microphone issues, and Live local mode. Try asking: How do I send this to my doctor?";
+  return "I can help with starting a note, adding injury images, finding History, sending to the doctor inbox, and microphone issues. Try asking: How do I send this to my doctor?";
 }
 
 async function askHelpBot(question, context) {
@@ -273,87 +268,243 @@ function SummaryView({ summary }) {
   );
 }
 
+let helpMessageSeq = 0;
+function nextMessageId() {
+  helpMessageSeq += 1;
+  return `msg-${Date.now().toString(36)}-${helpMessageSeq}`;
+}
+
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function loadHelpChats() {
+  try {
+    const chats = JSON.parse(localStorage.getItem(HELP_CHATS_KEY) || "[]");
+    return Array.isArray(chats) ? chats : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveHelpChats(chats) {
+  try {
+    localStorage.setItem(HELP_CHATS_KEY, JSON.stringify(chats.slice(0, 30)));
+  } catch {
+    // Ignore storage failures (private mode, quota, etc.).
+  }
+}
+
+function relativeTime(timestamp) {
+  const diff = Date.now() - timestamp;
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 function HelpBot({ context = "patient" }) {
   const [open, setOpen] = useState(false);
-  const [selectedTopicId, setSelectedTopicId] = useState(context === "doctor" ? "doctor" : "start");
   const [question, setQuestion] = useState("");
-  const [customAnswer, setCustomAnswer] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [chats, setChats] = useState(() => loadHelpChats());
+  const [showHistory, setShowHistory] = useState(false);
+  const [typingDots, setTypingDots] = useState(false);
   const [asking, setAsking] = useState(false);
-  const [guideStatus, setGuideStatus] = useState(useLlmHelp ? "LLM help enabled" : "Local guide active");
-  const apiHelpHref = `${window.location.pathname}?api=1`;
-  const localHelpHref = `${window.location.pathname}?localLlm=1`;
-  const selectedTopic = helpTopics.find(topic => topic.id === selectedTopicId) || helpTopics[0];
+  const aliveRef = useRef(true);
+  const threadRef = useRef(null);
+  const messagesRef = useRef(messages);
+  const currentIdRef = useRef(null);
+  const started = messages.length > 0;
   const visibleTopics = context === "doctor"
-    ? helpTopics.filter(topic => ["doctor", "send", "images", "local"].includes(topic.id))
+    ? helpTopics.filter(topic => ["doctor", "send", "images"].includes(topic.id))
     : helpTopics;
 
-  async function handleQuestionSubmit(event) {
-    event.preventDefault();
-    const trimmed = question.trim();
-    if (!trimmed) return;
+  useEffect(() => () => { aliveRef.current = false; }, []);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
+  // Keep the thread scrolled to the newest message as it grows / types out.
+  useEffect(() => {
+    const node = threadRef.current;
+    if (node && !showHistory) node.scrollTop = node.scrollHeight;
+  }, [messages, typingDots, open, showHistory]);
+
+  function persistChat(msgs) {
+    if (!msgs.length) return;
+    let id = currentIdRef.current;
+    if (!id) {
+      id = nextMessageId();
+      currentIdRef.current = id;
+    }
+    const firstUser = msgs.find(msg => msg.role === "user");
+    const title = (firstUser?.text || "New chat").slice(0, 48);
+    setChats(prev => {
+      const next = [{ id, title, messages: msgs, updatedAt: Date.now() }, ...prev.filter(chat => chat.id !== id)];
+      saveHelpChats(next);
+      return next;
+    });
+  }
+
+  function startNewChat() {
+    currentIdRef.current = null;
+    setMessages([]);
+    setQuestion("");
+    setShowHistory(false);
+  }
+
+  function openChat(id) {
+    const chat = chats.find(item => item.id === id);
+    if (!chat) return;
+    currentIdRef.current = id;
+    setMessages(chat.messages);
+    setShowHistory(false);
+  }
+
+  function deleteChat(id, event) {
+    event.stopPropagation();
+    setChats(prev => {
+      const next = prev.filter(chat => chat.id !== id);
+      saveHelpChats(next);
+      return next;
+    });
+    if (currentIdRef.current === id) startNewChat();
+  }
+
+  async function sendMessage(text) {
+    const trimmed = text.trim();
+    if (!trimmed || asking) return;
+
+    setQuestion("");
+    setShowHistory(false);
     setAsking(true);
-    setGuideStatus(useLlmHelp ? "Asking LLM..." : "Checking guide...");
+
+    const userMsg = { id: nextMessageId(), role: "user", text: trimmed };
+    let working = [...messagesRef.current, userMsg];
+    setMessages(working);
+    persistChat(working);
+
     const result = await askHelpBot(trimmed, context);
-    setCustomAnswer({ question: trimmed, answer: result.answer });
-    setGuideStatus(result.source);
+    if (!aliveRef.current) return;
+
+    // Pause like a person composing a reply, then show the typing indicator.
+    setTypingDots(true);
+    await delay(900);
+    if (!aliveRef.current) return;
+    setTypingDots(false);
+
+    // Reveal the answer character by character, like a live chat.
+    const botId = nextMessageId();
+    working = [...working, { id: botId, role: "bot", text: "" }];
+    setMessages(working);
+    const full = result.answer;
+    const step = full.length > 220 ? 3 : 1;
+    for (let i = step; i < full.length + step; i += step) {
+      await delay(14);
+      if (!aliveRef.current) return;
+      const shown = full.slice(0, i);
+      setMessages(prev => prev.map(msg => msg.id === botId ? { ...msg, text: shown } : msg));
+    }
+
+    const finalMsgs = working.map(msg => msg.id === botId ? { ...msg, text: full } : msg);
+    persistChat(finalMsgs);
     setAsking(false);
+  }
+
+  function handleQuestionSubmit(event) {
+    event.preventDefault();
+    sendMessage(question);
   }
 
   return (
     <aside className={`helpbot ${open ? "open" : ""}`} aria-label="VisitReady help assistant">
-      <button className="helpbot-toggle" type="button" onClick={() => setOpen(value => !value)} aria-expanded={open}>
-        {useLlmHelp ? "AI Guide: LLM" : "AI Guide"}
+      <button
+        className="helpbot-toggle"
+        type="button"
+        onClick={() => setOpen(value => !value)}
+        aria-expanded={open}
+        aria-label={open ? "Close AI Guide" : "Open AI Guide"}
+      >
+        {open ? "✕" : "💬"}
       </button>
       {open && (
         <div className="helpbot-panel animated-panel">
           <div className="helpbot-head">
-            <div>
-              <p className="section-label">Product guide</p>
-              <h2>AI usage assistant</h2>
+            <button
+              className={`helpbot-icon-btn ${showHistory ? "active" : ""}`}
+              type="button"
+              onClick={() => setShowHistory(value => !value)}
+              aria-label="Chat history"
+              title="Chat history"
+            >
+              🕘
+            </button>
+            <h2>AI Guide</h2>
+            <div className="helpbot-head-actions">
+              <button className="helpbot-icon-btn" type="button" onClick={startNewChat} aria-label="New chat" title="New chat">＋</button>
+              <button className="helpbot-icon-btn" type="button" onClick={() => setOpen(false)} aria-label="Close" title="Close">✕</button>
             </div>
-            <button className="text-button" type="button" onClick={() => setOpen(false)}>Close</button>
           </div>
-          <div className={`helpbot-mode ${useLlmHelp ? "remote" : "local"}`}>
-            <strong>{useLlmHelp ? "LLM mode" : "Local mode"}</strong>
-            <span>{useLlmHelp ? "Free-form questions route to OpenAI if a key exists, or a local Ollama/LM Studio model if one is running." : "Free FAQ fallback is active. Open local LLM mode if you have Ollama or LM Studio running."}</span>
-            {!useLlmHelp && <a href={localHelpHref}>Open local LLM mode</a>}
-            {!useLlmHelp && <a href={apiHelpHref}>Open OpenAI mode</a>}
-          </div>
-          <form className="helpbot-form" onSubmit={handleQuestionSubmit}>
-            <label htmlFor={`help-question-${context}`}>Ask anything about using VisitReady</label>
-            <div>
-              <input
-                id={`help-question-${context}`}
-                value={question}
-                onChange={event => setQuestion(event.target.value)}
-                placeholder="Example: how do I show my doctor the images?"
-              />
-              <button type="submit" disabled={asking}>{asking ? "Asking..." : "Ask"}</button>
-            </div>
-            <span>{guideStatus}</span>
-          </form>
-          {customAnswer && (
-            <section className="helpbot-answer helpbot-custom">
-              <h3>{customAnswer.question}</h3>
-              <p>{customAnswer.answer}</p>
-            </section>
-          )}
-          <div className="helpbot-faq">
-            <p className="section-label">FAQ</p>
-            <div className="helpbot-topics">
-              {visibleTopics.map(topic => (
-                <button className={topic.id === selectedTopicId ? "active" : ""} type="button" key={topic.id} onClick={() => setSelectedTopicId(topic.id)}>
-                  {topic.title}
+
+          {showHistory ? (
+            <div className="helpbot-body helpbot-history">
+              <p className="section-label">Chat history</p>
+              {chats.length === 0 && <p className="helpbot-history-empty">No saved chats yet.</p>}
+              {chats.map(chat => (
+                <button className="helpbot-history-item" type="button" key={chat.id} onClick={() => openChat(chat.id)}>
+                  <span className="helpbot-history-title">{chat.title}</span>
+                  <span className="helpbot-history-meta">{relativeTime(chat.updatedAt)}</span>
+                  <span className="helpbot-history-delete" role="button" aria-label="Delete chat" onClick={event => deleteChat(chat.id, event)}>✕</span>
                 </button>
               ))}
             </div>
-          </div>
-          <section className="helpbot-answer">
-            <h3>{selectedTopic.title}</h3>
-            <p>{selectedTopic.answer}</p>
-          </section>
-          <p className="voice-help">This guide explains how to use VisitReady. It does not provide medical advice.</p>
+          ) : (
+            <div className="helpbot-body" ref={threadRef}>
+              {!started && (
+                <div className="helpbot-intro">
+                  <div className="helpbot-faq">
+                    <p className="section-label">Common questions</p>
+                    <div className="helpbot-topics">
+                      {visibleTopics.map(topic => (
+                        <button type="button" key={topic.id} onClick={() => sendMessage(topic.title)}>
+                          {topic.title}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="helpbot-bubble bot">Hi there 👋</div>
+                  <div className="helpbot-bubble bot">What can I help you with?</div>
+                </div>
+              )}
+
+              {messages.map(msg => (
+                <div key={msg.id} className={`helpbot-bubble ${msg.role}`}>
+                  {msg.text}
+                </div>
+              ))}
+
+              {typingDots && (
+                <div className="helpbot-bubble bot typing" aria-label="AI Guide is typing">
+                  <span></span><span></span><span></span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <form className="helpbot-form" onSubmit={handleQuestionSubmit}>
+            <div>
+              <input
+                id={`help-question-${context}`}
+                aria-label="Ask anything about using VisitReady"
+                value={question}
+                onChange={event => setQuestion(event.target.value)}
+                placeholder="Ask anything about using VisitReady…"
+              />
+              <button type="submit" disabled={asking} aria-label="Send">{asking ? "…" : "↑"}</button>
+            </div>
+          </form>
         </div>
       )}
     </aside>
@@ -465,7 +616,6 @@ function App() {
   const [visitSummary, setVisitSummary] = useState(localVisit(sampleEntries));
   const [activeTab, setActiveTab] = useState("entry");
   const [phase, setPhase] = useState("ready");
-  const [apiStatus, setApiStatus] = useState(useRemoteApi ? "OpenAI ready" : "Live local mode");
   const [voiceHelp, setVoiceHelp] = useState("Checking voice input...");
   const [recording, setRecording] = useState(false);
   const [imageAttachments, setImageAttachments] = useState([]);
@@ -557,16 +707,13 @@ function App() {
       try {
         const api = await askServer("/api/entry", { text: trimmed });
         if (api.result) {
-          setApiStatus(api.models ? "GPT-5.6 pair" : "OpenAI API");
           setEntrySummary(api.result);
           if (addEntry) addHistoryItem("Today's note", api.result, trimmed, imageAttachments);
         } else {
-          setApiStatus("Live local mode");
           setEntrySummary(fallback);
           if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
         }
       } catch {
-        setApiStatus("Live local mode");
         setEntrySummary(fallback);
         if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
       }
@@ -580,16 +727,13 @@ function App() {
       try {
         const api = await askServer("/api/visit", { entries });
         if (api.result) {
-          setApiStatus(api.models ? "GPT-5.6 pair" : "OpenAI API");
           setVisitSummary(api.result);
           addHistoryItem("Visit summary", api.result, entries.map(entry => entry.text).join("\n\n"), imageAttachments);
         } else {
-          setApiStatus("Live local mode");
           setVisitSummary(fallback);
           addHistoryItem("Visit summary", fallback, entries.map(entry => entry.text).join("\n\n"), imageAttachments);
         }
       } catch {
-        setApiStatus("Live local mode");
         setVisitSummary(fallback);
         addHistoryItem("Visit summary", fallback, entries.map(entry => entry.text).join("\n\n"), imageAttachments);
       }
@@ -677,7 +821,6 @@ function App() {
             <h1>VisitReady</h1>
             <p className="tagline">Say what happened in your own words. Get a clean note for your doctor.</p>
           </div>
-          <div className="status" aria-live="polite"><span className="status-dot"></span><span>{apiStatus}</span></div>
         </header>
 
         <div className="steps" aria-label="Four step workflow">
