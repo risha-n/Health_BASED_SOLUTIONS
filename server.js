@@ -35,6 +35,7 @@ Rules:
 - Do not invent facts.
 - Preserve uncertainty using phrases like "patient reports" and "not mentioned".
 - Extract only clinically relevant information.
+- Always write every output field in English, even if the patient source text is in another language.
 - Output valid JSON only, matching this schema:
 {
   "symptoms": ["string"],
@@ -53,6 +54,7 @@ Rules:
 - Keep only facts supported by the source text.
 - Remove diagnoses, unsupported claims, and invented details.
 - If a field is missing or unclear, use "Not mentioned" or "Not clearly stated".
+- Always write the final JSON in English for the doctor.
 - Keep the HPI concise and useful for a doctor's visit.`;
 
 const HELP_PROMPT = `You are the VisitReady product guide inside a hackathon demo.
@@ -73,6 +75,17 @@ Rules:
 - Do not provide medical advice, diagnosis, triage, or treatment recommendations.
 - If the user asks medical questions, tell them to contact a clinician and use VisitReady to document what happened.
 - If browser microphone problems come up, mention Chrome, microphone permissions, and typing as a fallback.`;
+
+const TRANSLATION_PROMPT = `You are a medical interpreter for the VisitReady hackathon demo.
+Translate patient symptom descriptions into clear English for a clinician.
+
+Rules:
+- Translate faithfully.
+- Do not diagnose.
+- Do not add, remove, or infer symptoms.
+- Preserve uncertainty and timing.
+- Keep medication names as written when unclear.
+- Return only the translated English patient statement, no preface and no bullet points.`;
 
 function sendJson(res, status, body) {
   res.writeHead(status, {
@@ -178,8 +191,8 @@ function extractOpenAIText(payload) {
 
 function buildUserPrompt(task, entries) {
   return task === "visit"
-    ? `Generate a visit-prep summary from these dated patient journal entries:\n\n${entries.map((entry, index) => `${index + 1}. ${entry.date}: ${entry.text}`).join("\n\n")}`
-    : `Convert this raw patient journal entry into the JSON structure:\n\n${entries[0].text}`;
+    ? `Generate a visit-prep summary in English from these dated patient journal entries. If an entry contains both original language and English interpretation, use the English interpretation for the doctor-facing summary:\n\n${entries.map((entry, index) => `${index + 1}. ${entry.date}: ${entry.text}`).join("\n\n")}`
+    : `Convert this raw patient journal entry into the JSON structure. Write the doctor-facing output in English:\n\n${entries[0].text}`;
 }
 
 function buildSourceText(entries) {
@@ -389,6 +402,48 @@ async function handleHelp(req, res) {
   }
 }
 
+async function handleTranslate(req, res) {
+  if (req.method === "OPTIONS") {
+    sendJson(res, 204, {});
+    return;
+  }
+
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "Method not allowed" });
+    return;
+  }
+
+  try {
+    const body = JSON.parse(await readBody(req));
+    const text = String(body.text || "").trim();
+    const language = String(body.language || "the patient's language").trim();
+
+    if (!text) {
+      sendJson(res, 400, { error: "Text is required" });
+      return;
+    }
+
+    const prompt = `Source language: ${language}\nPatient statement:\n${text}`;
+    const translatedText = process.env.OPENAI_API_KEY
+      ? await callOpenAIText(HELP_MODEL, TRANSLATION_PROMPT, prompt, 650)
+      : await callLocalHelpText(TRANSLATION_PROMPT, prompt);
+
+    if (translatedText.error) {
+      sendJson(res, 502, translatedText);
+      return;
+    }
+
+    sendJson(res, 200, {
+      translatedText,
+      sourceLanguage: language,
+      provider: process.env.OPENAI_API_KEY ? "OpenAI" : LOCAL_HELP_PROVIDER,
+      model: process.env.OPENAI_API_KEY ? HELP_MODEL : (LOCAL_HELP_PROVIDER === "lmstudio" ? LM_STUDIO_MODEL : OLLAMA_MODEL)
+    });
+  } catch (error) {
+    sendJson(res, 400, { error: error.message });
+  }
+}
+
 async function handleApi(req, res) {
   if (req.method === "OPTIONS") {
     sendJson(res, 204, {});
@@ -418,6 +473,11 @@ const server = http.createServer((req, res) => {
 
   if (req.url.startsWith("/api/help")) {
     handleHelp(req, res);
+    return;
+  }
+
+  if (req.url.startsWith("/api/translate")) {
+    handleTranslate(req, res);
     return;
   }
 

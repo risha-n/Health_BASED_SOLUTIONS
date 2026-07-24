@@ -16,6 +16,14 @@ const processSteps = [
   { id: "ready", label: "Ready", detail: "Summary prepared for the visit" }
 ];
 
+const languageOptions = [
+  { id: "English", label: "English", speech: "en-US", sample: sampleEntries[0].text },
+  { id: "Spanish", label: "Español", speech: "es-US", sample: "Me duele el estómago desde anoche después de cenar. Siento ardor y náuseas, pero no tengo fiebre." },
+  { id: "Hindi", label: "हिन्दी", speech: "hi-IN", sample: "कल रात खाने के बाद से मेरे पेट में जलन और दर्द है। थोड़ा मतली जैसा लग रहा है, लेकिन बुखार नहीं है।" },
+  { id: "Mandarin Chinese", label: "中文", speech: "zh-CN", sample: "昨晚吃完饭后我的胃开始疼，有灼烧感，也有点恶心，但没有发烧。" },
+  { id: "Arabic", label: "العربية", speech: "ar-SA", sample: "بدأت معدتي تؤلمني بعد العشاء أمس، وأشعر بحرقة وغثيان بسيط، لكن لا توجد حمى." }
+];
+
 const useRemoteApi = new URLSearchParams(window.location.search).get("api") === "1";
 const useLlmHelp = useRemoteApi || new URLSearchParams(window.location.search).get("localLlm") === "1";
 const isDoctorView = window.location.pathname === "/doctor";
@@ -24,7 +32,7 @@ const helpTopics = [
   {
     id: "start",
     title: "How do I start?",
-    answer: "Type what happened in the big text box, or use the Mic button if your browser supports voice. Then click Make doctor note."
+    answer: "Type what happened in the big text box, or use Start voice input if your browser supports speech-to-text. Then click Make doctor note."
   },
   {
     id: "images",
@@ -49,7 +57,7 @@ const helpTopics = [
   {
     id: "mic",
     title: "Why is my mic not working?",
-    answer: "Voice works best in Chrome. If the mic does not start, allow microphone permission in the browser or type the story instead."
+    answer: "Voice works best in Chrome. If the voice button does not start, this browser may not expose speech-to-text or microphone APIs. Open the same link in Chrome, allow microphone permission, or type the story instead."
   },
   {
     id: "local",
@@ -96,6 +104,35 @@ async function askHelpBot(question, context) {
   }
 
   return { answer: getLocalHelpAnswer(question, context), source: "Local guide fallback" };
+}
+
+async function translatePatientText(text, language) {
+  const trimmed = text.trim();
+  if (!trimmed || language === "English" || !useLlmHelp) {
+    return { translatedText: trimmed, source: language === "English" ? "Original English" : "Translation unavailable" };
+  }
+
+  try {
+    const response = await fetch("/api/translate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: trimmed, language })
+    });
+    const data = await response.json();
+    if (data.translatedText) {
+      return { translatedText: data.translatedText, source: data.provider ? `${data.provider}: ${data.model}` : "Interpreter" };
+    }
+  } catch {
+    // Fall through to original text.
+  }
+
+  return { translatedText: trimmed, source: "Translation fallback" };
+}
+
+function getVoiceCapability() {
+  const hasSpeechApi = typeof window !== "undefined" && Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const hasMicApi = typeof navigator !== "undefined" && Boolean(navigator.mediaDevices?.getUserMedia);
+  return { checked: true, hasSpeechApi, hasMicApi };
 }
 
 function uniq(items) {
@@ -156,6 +193,11 @@ function localParse(text) {
     if (positivePattern.test(lower) && !negativePattern.test(lower)) symptoms.push(label);
   });
 
+  if (/\b(no|not|without|denies|do not have|don't have|dont have|does not have|doesn't have)\b.{0,24}\b(fever|temperature|chills)\b/.test(lower)) {
+    const feverIndex = symptoms.indexOf("fever");
+    if (feverIndex >= 0) symptoms.splice(feverIndex, 1);
+  }
+
   ["tums", "ibuprofen", "advil", "tylenol", "acetaminophen", "omeprazole", "pepcid", "metformin", "lisinopril", "coffee"].forEach(word => {
     if (lower.includes(word)) meds.push(word.replace(/^\w/, char => char.toUpperCase()));
   });
@@ -183,7 +225,7 @@ function localParse(text) {
     if (/\b(monday|tuesday|wednesday|thursday|friday|yesterday|today|night|morning|after|around|week|days)\b/i.test(sentence)) {
       timeline.push(sentence);
     }
-    if (/\b(no fever|no blood|no bleeding|no black stool|no throwing up|not crushing chest pain|no trouble breathing|not short of breath|denies fever|denies chest pain)\b/i.test(sentence)) {
+    if (/\b(no fever|no blood|no bleeding|no black stool|no throwing up|not crushing chest pain|no trouble breathing|not short of breath|denies fever|denies chest pain|do not have a fever|don't have a fever|dont have a fever|does not have a fever|doesn't have a fever)\b/i.test(sentence)) {
       redFlags.push(sentence);
     }
   });
@@ -464,6 +506,7 @@ function App() {
   const [entrySummary, setEntrySummary] = useState(null);
   const [visitSummary, setVisitSummary] = useState(localVisit(sampleEntries));
   const [activeTab, setActiveTab] = useState("entry");
+  const [workspaceTab, setWorkspaceTab] = useState("capture");
   const [phase, setPhase] = useState("ready");
   const [apiStatus, setApiStatus] = useState(useRemoteApi ? "OpenAI ready" : "Live local mode");
   const [voiceHelp, setVoiceHelp] = useState("Checking voice input...");
@@ -471,7 +514,14 @@ function App() {
   const [imageAttachments, setImageAttachments] = useState([]);
   const [history, setHistory] = useState(loadHistory);
   const [sendStatus, setSendStatus] = useState("Not sent yet");
+  const [patientLanguage, setPatientLanguage] = useState("English");
+  const [translatedText, setTranslatedText] = useState("");
+  const [doctorEnglishText, setDoctorEnglishText] = useState(sampleEntries[0].text);
+  const [translationStatus, setTranslationStatus] = useState("Interpreter idle");
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const [voiceCapability, setVoiceCapability] = useState({ checked: false, hasSpeechApi: false, hasMicApi: false });
   const recognitionRef = useRef(null);
+  const voiceButtonRef = useRef(null);
 
   const currentStepIndex = useMemo(() => {
     if (phase === "capture" || phase === "listening") return 0;
@@ -481,16 +531,24 @@ function App() {
   }, [phase]);
 
   useEffect(() => {
+    const capability = getVoiceCapability();
+    setVoiceCapability(capability);
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      setVoiceHelp("Voice input is not available in this browser. For the live mic demo, open this app in Chrome and allow microphone access.");
+      recognitionRef.current = null;
+      setRecording(false);
+      setVoiceSupported(false);
+      setVoiceHelp(capability.hasMicApi
+        ? "This browser can use a microphone, but does not support browser speech-to-text. Open Chrome for voice, or type the story here."
+        : "This browser does not expose microphone or speech-to-text access to this page. Open the app in Chrome for the voice demo, or type the story here.");
       return;
     }
 
+    setVoiceSupported(true);
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true;
-    recognition.lang = "en-US";
+    recognition.lang = languageOptions.find(language => language.id === patientLanguage)?.speech || "en-US";
     recognition.onresult = event => {
       let transcript = "";
       for (let index = 0; index < event.results.length; index += 1) {
@@ -501,7 +559,7 @@ function App() {
     recognition.onend = () => {
       setRecording(false);
       setPhase("capture");
-      setVoiceHelp("Voice input is ready. Click Mic, allow microphone access, then speak naturally.");
+      setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
     };
     recognition.onerror = event => {
       setRecording(false);
@@ -511,8 +569,8 @@ function App() {
         : "Voice input stopped. You can try again or type the note instead.");
     };
     recognitionRef.current = recognition;
-    setVoiceHelp("Voice input is ready. Click Mic, allow microphone access, then speak naturally.");
-  }, []);
+    setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
+  }, [patientLanguage]);
 
   useEffect(() => {
     structureEntry(sampleEntries[0].text, false);
@@ -521,6 +579,23 @@ function App() {
   useEffect(() => {
     saveHistory(history);
   }, [history]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [workspaceTab]);
+
+  useEffect(() => {
+    const button = voiceButtonRef.current;
+    if (!button) return undefined;
+
+    const handlePress = event => {
+      event.preventDefault();
+      toggleVoice();
+    };
+
+    button.addEventListener("pointerdown", handlePress);
+    return () => button.removeEventListener("pointerdown", handlePress);
+  }, [recording, patientLanguage, voiceSupported]);
 
   function addHistoryItem(type, summary, sourceText, images = []) {
     const item = {
@@ -546,31 +621,42 @@ function App() {
     const trimmed = text.trim();
     if (!trimmed) return;
 
-    if (addEntry) {
-      const liveEntry = { date: "Live demo", text: trimmed };
-      setEntries(previous => [liveEntry, ...previous]);
-      setSelectedIndex(0);
-    }
-
     await runProcess(async () => {
-      const fallback = localParse(trimmed);
+      setTranslationStatus(patientLanguage === "English" ? "Original English" : "Interpreting...");
+      const interpreted = await translatePatientText(trimmed, patientLanguage);
+      const clinicalText = interpreted.translatedText || trimmed;
+      const sourceText = patientLanguage === "English"
+        ? `Doctor English: ${clinicalText}`
+        : `Doctor English: ${clinicalText}\n\nOriginal (${patientLanguage}): ${trimmed}`;
+      setTranslatedText(patientLanguage === "English" ? "" : clinicalText);
+      setDoctorEnglishText(clinicalText);
+      setTranslationStatus(interpreted.source);
+
+      if (addEntry) {
+        const liveEntry = { date: patientLanguage === "English" ? "Live demo" : `Live demo (${patientLanguage})`, text: clinicalText };
+        setEntries(previous => [liveEntry, ...previous]);
+        setSelectedIndex(0);
+      }
+
+      const fallback = localParse(clinicalText);
       try {
-        const api = await askServer("/api/entry", { text: trimmed });
+        const api = await askServer("/api/entry", { text: clinicalText });
         if (api.result) {
           setApiStatus(api.models ? "GPT-5.6 pair" : "OpenAI API");
           setEntrySummary(api.result);
-          if (addEntry) addHistoryItem("Today's note", api.result, trimmed, imageAttachments);
+          if (addEntry) addHistoryItem("Today's note", api.result, sourceText, imageAttachments);
         } else {
           setApiStatus("Live local mode");
           setEntrySummary(fallback);
-          if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
+          if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
         }
       } catch {
         setApiStatus("Live local mode");
         setEntrySummary(fallback);
-        if (addEntry) addHistoryItem("Today's note", fallback, trimmed, imageAttachments);
+        if (addEntry) addHistoryItem("Today's note", fallback, sourceText, imageAttachments);
       }
       setActiveTab("entry");
+      setWorkspaceTab("review");
     });
   }
 
@@ -594,15 +680,54 @@ function App() {
         addHistoryItem("Visit summary", fallback, entries.map(entry => entry.text).join("\n\n"), imageAttachments);
       }
       setActiveTab("visit");
+      setWorkspaceTab("review");
     });
   }
 
   function toggleVoice() {
-    const recognition = recognitionRef.current;
-    if (!recognition) {
-      setVoiceHelp("Voice input could not start in this browser. Type the note here, or open the app in Chrome for the mic demo.");
+    const capability = getVoiceCapability();
+    setVoiceCapability(capability);
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = recognitionRef.current;
+
+    if (!SpeechRecognition) {
+      recognitionRef.current = null;
+      setVoiceSupported(false);
+      setRecording(false);
+      setVoiceHelp(capability.hasMicApi
+        ? "This browser has microphone access but no speech-to-text API. Use Chrome for the live voice demo, or type here."
+        : "This browser does not expose microphone or speech-to-text APIs. Use Chrome for the live voice demo, or type here.");
       return;
     }
+
+    if (!recognition) {
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = languageOptions.find(language => language.id === patientLanguage)?.speech || "en-US";
+      recognition.onresult = event => {
+        let transcript = "";
+        for (let index = 0; index < event.results.length; index += 1) {
+          transcript += event.results[index][0].transcript;
+        }
+        setEntryText(transcript.trim());
+      };
+      recognition.onend = () => {
+        setRecording(false);
+        setPhase("capture");
+        setVoiceHelp("Voice input is ready. Click Start voice input, allow microphone access, then speak naturally.");
+      };
+      recognition.onerror = event => {
+        setRecording(false);
+        setPhase("capture");
+        setVoiceHelp(event.error === "not-allowed"
+          ? "Microphone access was blocked. Allow microphone access in the browser, then try again."
+          : "Voice input stopped. You can try again or type the note instead.");
+      };
+      recognitionRef.current = recognition;
+      setVoiceSupported(true);
+    }
+
     if (recording) {
       recognition.stop();
       return;
@@ -610,7 +735,7 @@ function App() {
     try {
       setRecording(true);
       setPhase("listening");
-      setVoiceHelp("Listening now. Speak your patient story, then click Stop.");
+      setVoiceHelp("Voice button pressed. Listening now, or waiting for microphone permission.");
       recognition.start();
     } catch {
       setRecording(false);
@@ -623,6 +748,19 @@ function App() {
     const next = (selectedIndex + 1) % entries.length;
     setSelectedIndex(next);
     setEntryText(entries[next].text);
+    setPatientLanguage("English");
+    setTranslatedText("");
+    setDoctorEnglishText(entries[next].text);
+    setTranslationStatus("Original English");
+    setPhase("capture");
+  }
+
+  function loadLanguageSample() {
+    const selected = languageOptions.find(language => language.id === patientLanguage) || languageOptions[0];
+    setEntryText(selected.sample);
+    setTranslatedText("");
+    setDoctorEnglishText("");
+    setTranslationStatus(patientLanguage === "English" ? "Original English" : "Sample ready for interpreter");
     setPhase("capture");
   }
 
@@ -652,16 +790,20 @@ function App() {
     }
 
     setSendStatus("Sending to doctor...");
+    const handoffSourceText = patientLanguage === "English"
+      ? `Doctor English: ${doctorEnglishText || entryText}`
+      : `Doctor English: ${doctorEnglishText || translatedText || "English interpretation not generated yet."}\n\nOriginal (${patientLanguage}): ${entryText}`;
     try {
       await postSubmission({
         patientName: "Demo Patient",
         summary,
-        sourceText: entryText,
+        sourceText: handoffSourceText,
         image: imageAttachments[0] || null,
         images: imageAttachments
       });
-      addHistoryItem("Sent to doctor", summary, entryText, imageAttachments);
+      addHistoryItem("Sent to doctor", summary, handoffSourceText, imageAttachments);
       setSendStatus("Sent to doctor inbox.");
+      setWorkspaceTab("handoff");
     } catch {
       setSendStatus("Could not send. Make sure the local server is running.");
     }
@@ -672,12 +814,38 @@ function App() {
       <HelpBot />
       <section className="workspace" aria-label="VisitReady demo workspace">
         <header className="masthead">
-          <div>
+          <div className="masthead-copy">
+            <div className="brand-lockup" aria-label="VisitReady medical logo">
+              <div className="doctor-logo" aria-hidden="true">
+                <span className="doctor-logo-cross"></span>
+                <span className="doctor-logo-line one"></span>
+                <span className="doctor-logo-line two"></span>
+              </div>
+              <span>Clinical AI Intake</span>
+            </div>
             <p className="eyebrow">Voice-first clinic prep</p>
             <h1>VisitReady</h1>
             <p className="tagline">Say what happened in your own words. Get a clean note for your doctor.</p>
+            <div className="mission-chips" aria-label="Core capabilities">
+              <span>English doctor output</span>
+              <span>Images supported</span>
+              <span>Local LLM ready</span>
+            </div>
           </div>
-          <div className="status" aria-live="polite"><span className="status-dot"></span><span>{apiStatus}</span></div>
+          <div className="mission-visual" aria-hidden="true">
+            <div className="visual-grid">
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <div className="scan-panel">
+              <span>CLINICAL PACKET</span>
+              <strong>{phase === "ready" ? "READY" : "PROCESSING"}</strong>
+              <small>{patientLanguage === "English" ? "INPUT: EN" : `INPUT: ${patientLanguage.toUpperCase()}`}</small>
+            </div>
+            <div className="signal-rail"><i></i><i></i><i></i><i></i></div>
+            <div className="status mission-status" aria-live="polite"><span className="status-dot"></span><span>{apiStatus}</span></div>
+          </div>
         </header>
 
         <div className="steps" aria-label="Four step workflow">
@@ -689,26 +857,89 @@ function App() {
           ))}
         </div>
 
-        <div className="grid">
-          <section className="input-panel">
+        <nav className="workspace-tabs" aria-label="Workspace sections">
+          {[
+            ["capture", "Capture / Voice"],
+            ["review", "Review"],
+            ["history", "History"],
+            ["handoff", "Handoff"]
+          ].map(([id, label]) => (
+            <button className={`workspace-tab ${workspaceTab === id ? "active" : ""}`} type="button" key={id} onClick={() => setWorkspaceTab(id)}>
+              {label}
+            </button>
+          ))}
+        </nav>
+
+        <div className="tab-workspace">
+          <section className={`input-panel tab-panel ${workspaceTab === "capture" ? "" : "hidden"}`}>
             <div className="panel-heading">
               <div>
                 <p className="section-label">Start here</p>
                 <h2>Tell the story once</h2>
-                <p>Use the microphone or type like you are talking to a friend.</p>
+                <p>Use the microphone or type in the patient&apos;s strongest language.</p>
               </div>
-              <button className={`icon-button ${recording ? "recording" : ""}`} type="button" onClick={toggleVoice} title={recording ? "Stop voice input" : "Start voice input"} aria-label={recording ? "Stop voice input" : "Start voice input"}>
-                <span aria-hidden="true">{recording ? "Stop" : "Mic"}</span>
+            </div>
+
+            <div className="language-panel">
+              <div>
+                <p className="section-label">Interpreter</p>
+                <h3>Cross-language intake</h3>
+                <p className="microcopy">Patient input can be any supported language. Doctor output is always English.</p>
+              </div>
+              <label>
+                Patient language
+                <select value={patientLanguage} onChange={event => {
+                  setPatientLanguage(event.target.value);
+                  setTranslatedText("");
+                  setTranslationStatus(event.target.value === "English" ? "Original English" : "Interpreter ready");
+                }}>
+                  {languageOptions.map(language => (
+                    <option value={language.id} key={language.id}>{language.label}</option>
+                  ))}
+                </select>
+              </label>
+              <button type="button" className="secondary" onClick={loadLanguageSample}>Use language sample</button>
+            </div>
+
+            <div className="voice-control">
+              <button
+                ref={voiceButtonRef}
+                className={`voice-button ${recording ? "recording" : ""}`}
+                type="button"
+                onKeyDown={event => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggleVoice();
+                  }
+                }}
+              >
+                {recording ? "Stop voice input" : "Start voice input"}
               </button>
+              <div className={`voice-diagnostic ${voiceCapability.hasSpeechApi ? "ok" : "blocked"}`}>
+                <strong>{recording ? "Listening now" : voiceCapability.hasSpeechApi ? "Voice available" : "Voice unavailable here"}</strong>
+                <span>
+                  {voiceCapability.hasSpeechApi
+                    ? "Tap once, allow microphone access, then speak naturally."
+                    : voiceCapability.hasMicApi
+                      ? "Mic exists, but browser speech-to-text is missing. Open in Chrome."
+                      : "This browser blocks mic/speech APIs. Open in Chrome or type."}
+                </span>
+              </div>
             </div>
 
             <label className="sr-only" htmlFor="entryText">Patient journal entry</label>
-            <textarea id="entryText" spellCheck="true" value={entryText} onChange={event => { setEntryText(event.target.value); setPhase("capture"); }} placeholder="Example: My stomach started hurting after dinner. It felt like burning. I took Tums and it helped a little." />
+            <textarea id="entryText" spellCheck="true" value={entryText} onChange={event => { setEntryText(event.target.value); setPhase("capture"); setTranslatedText(""); }} placeholder="Example: Me duele el estómago desde anoche, or: My stomach started hurting after dinner." />
             <div className="actions">
               <button type="button" className="secondary" onClick={loadSample}>Try another example</button>
               <button type="button" onClick={() => structureEntry(entryText)} disabled={phase === "extract" || phase === "structure"}>{phase === "extract" || phase === "structure" ? "Working..." : "Make doctor note"}</button>
             </div>
-            <p className="voice-help" aria-live="polite">{voiceHelp}</p>
+            <p className="voice-help" aria-live="polite">{voiceHelp} Interpreter: {translationStatus}.</p>
+            {translatedText && (
+              <section className="translation-preview animated-panel">
+                <p className="section-label">Interpreter English</p>
+                <p>{translatedText}</p>
+              </section>
+            )}
 
             <div className="image-upload">
               <div>
@@ -757,7 +988,7 @@ function App() {
             </div>
           </section>
 
-          <section className="output-panel">
+          <section className={`output-panel tab-panel ${workspaceTab === "review" ? "" : "hidden"}`}>
             <div className="output-heading">
               <div><p className="section-label">Doctor-ready output</p><h2>Clean clinical summary</h2></div>
               <div className={`signal ${phase !== "ready" ? "processing" : ""}`} aria-hidden="true"><span></span><span></span><span></span></div>
@@ -765,46 +996,79 @@ function App() {
             <div className="tabs" role="tablist" aria-label="Summary views">
               <button className={`tab ${activeTab === "entry" ? "active" : ""}`} type="button" onClick={() => setActiveTab("entry")}>Today&apos;s note</button>
               <button className={`tab ${activeTab === "visit" ? "active" : ""}`} type="button" onClick={() => setActiveTab("visit")}>Visit summary</button>
-              <button className={`tab ${activeTab === "history" ? "active" : ""}`} type="button" onClick={() => setActiveTab("history")}>History</button>
+              <button className="tab" type="button" onClick={() => setWorkspaceTab("history")}>History</button>
             </div>
-            <div className="handoff-bar">
+            <div className={activeTab === "entry" ? "" : "hidden"}><SummaryView summary={entrySummary} /></div>
+            <div className={activeTab === "visit" ? "" : "hidden"}><SummaryView summary={visitSummary} /></div>
+            <div className="review-actions">
+              <button type="button" className="secondary" onClick={() => setWorkspaceTab("capture")}>Use voice input</button>
+              <button type="button" onClick={() => setWorkspaceTab("handoff")}>Continue to handoff</button>
+            </div>
+          </section>
+
+          <section className={`output-panel tab-panel ${workspaceTab === "history" ? "" : "hidden"}`}>
+            <div className="output-heading">
+              <div><p className="section-label">Saved notes</p><h2>Patient history</h2></div>
+            </div>
+            <div className="history-list animated-panel">
+              {history.length === 0 ? (
+                <div className="empty">No saved visit history yet. Make a note or send one to the doctor, then it will appear here.</div>
+              ) : history.map(item => (
+                <article className="history-card" key={item.id}>
+                  <div className="history-card-head">
+                    <div>
+                      <span className="meta">{new Date(item.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                      <h3>{item.type}</h3>
+                    </div>
+                    <span className="count-pill">{(item.images || []).length}</span>
+                  </div>
+                  <p>{item.summary?.hpi || "Summary unavailable"}</p>
+                  {(item.images || []).length > 0 && (
+                    <div className="image-grid compact">
+                      {(item.images || []).map(image => (
+                        <figure key={image.dataUrl}>
+                          <img src={image.dataUrl} alt={image.name || "Saved patient attachment"} />
+                          <figcaption>{image.name || "Patient image"}</figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className={`output-panel tab-panel ${workspaceTab === "handoff" ? "" : "hidden"}`}>
+            <div className="output-heading">
+              <div><p className="section-label">Doctor handoff</p><h2>Send the packet</h2></div>
+            </div>
+            <div className="handoff-bar handoff-focused">
               <div>
-                <strong>Doctor handoff</strong>
+                <strong>Status</strong>
                 <p>{sendStatus}</p>
               </div>
               <button type="button" onClick={sendToDoctor}>Send to Doctor</button>
               <a className="secondary-link" href="/doctor">Open inbox</a>
             </div>
-            <div className={activeTab === "entry" ? "" : "hidden"}><SummaryView summary={entrySummary} /></div>
-            <div className={activeTab === "visit" ? "" : "hidden"}><SummaryView summary={visitSummary} /></div>
-            <div className={activeTab === "history" ? "" : "hidden"}>
-              <div className="history-list animated-panel">
-                {history.length === 0 ? (
-                  <div className="empty">No saved visit history yet. Make a note or send one to the doctor, then it will appear here.</div>
-                ) : history.map(item => (
-                  <article className="history-card" key={item.id}>
-                    <div className="history-card-head">
-                      <div>
-                        <span className="meta">{new Date(item.createdAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                        <h3>{item.type}</h3>
-                      </div>
-                      <span className="count-pill">{(item.images || []).length}</span>
-                    </div>
-                    <p>{item.summary?.hpi || "Summary unavailable"}</p>
-                    {(item.images || []).length > 0 && (
-                      <div className="image-grid compact">
-                        {(item.images || []).map(image => (
-                          <figure key={image.dataUrl}>
-                            <img src={image.dataUrl} alt={image.name || "Saved patient attachment"} />
-                            <figcaption>{image.name || "Patient image"}</figcaption>
-                          </figure>
-                        ))}
-                      </div>
-                    )}
-                  </article>
-                ))}
-              </div>
-            </div>
+            <SummaryView summary={activeTab === "visit" ? visitSummary : entrySummary} />
+            {imageAttachments.length > 0 && (
+              <section className="section image-section">
+                <h3><span className="pill blue">Images</span>Attached Images</h3>
+                <div className="image-grid">
+                  {imageAttachments.map(image => (
+                    <figure key={image.dataUrl}>
+                      <img src={image.dataUrl} alt={image.name || "Patient attachment"} />
+                      <figcaption>{image.name || "Patient image"}</figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </section>
+            )}
+            {translatedText && (
+              <SummarySection badge="Lang" tone="blue" title="Interpreter Context">
+                <p>Original language: {patientLanguage}. English interpretation: {translatedText}</p>
+              </SummarySection>
+            )}
           </section>
         </div>
       </section>
