@@ -3770,6 +3770,13 @@ button:hover {
   background: linear-gradient(90deg, var(--teal), var(--lime));
 }
 
+/* No highlight box around active steps — only the node circle changes */
+.step.active {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 .step span {
   align-items: center;
   background: rgba(255, 255, 255, 0.03);
@@ -4053,4 +4060,15 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Drop the top-left body radial glow that made step 1 look highlighted;
+   keep the rest of the upstream light background. */
+body {
+  background:
+    linear-gradient(rgba(36, 163, 111, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(36, 163, 111, 0.05) 1px, transparent 1px),
+    radial-gradient(circle at 80% 6%, rgba(158, 230, 168, 0.42), transparent 28%),
+    linear-gradient(135deg, #ffffff 0%, #f1faf1 45%, #e8f7ed 100%);
+  background-size: 88px 88px, 88px 88px, auto, auto;
 }
