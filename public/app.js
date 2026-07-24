@@ -22173,6 +22173,7 @@ var VisitReady = (() => {
       if (phase === "structure") return 2;
       return 3;
     }, [phase]);
+    const packetStep = processSteps[currentStepIndex];
     (0, import_react.useEffect)(() => {
       const capability = getVoiceCapability();
       setVoiceCapability(capability);
@@ -22457,11 +22458,13 @@ Original (${patientLanguage}): ${entryText}`;
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {}),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {})
             ] }),
-            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "scan-panel", children: [
+            /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: `scan-panel packet-phase-${packetStep.id}`, children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", { children: "CLINICAL PACKET" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: phase === "ready" ? "READY" : "PROCESSING" }),
-              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: patientLanguage === "English" ? "INPUT: EN" : `INPUT: ${patientLanguage.toUpperCase()}` })
-            ] }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("strong", { children: packetStep.label }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: packetStep.detail }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("div", { className: "packet-progress", "aria-hidden": "true", children: processSteps.map((step, index) => /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", { className: index <= currentStepIndex ? "active" : "" }, step.id)) }),
+              /* @__PURE__ */ (0, import_jsx_runtime.jsx)("small", { children: patientLanguage === "English" ? "Input: English" : `Input: ${patientLanguage}` })
+            ] }, packetStep.id),
             /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", { className: "signal-rail", children: [
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {}),
               /* @__PURE__ */ (0, import_jsx_runtime.jsx)("i", {}),

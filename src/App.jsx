@@ -529,6 +529,7 @@ function App() {
     if (phase === "structure") return 2;
     return 3;
   }, [phase]);
+  const packetStep = processSteps[currentStepIndex];
 
   useEffect(() => {
     const capability = getVoiceCapability();
@@ -838,10 +839,16 @@ function App() {
               <span></span><span></span><span></span><span></span>
               <span></span><span></span><span></span><span></span>
             </div>
-            <div className="scan-panel">
+            <div className={`scan-panel packet-phase-${packetStep.id}`} key={packetStep.id}>
               <span>CLINICAL PACKET</span>
-              <strong>{phase === "ready" ? "READY" : "PROCESSING"}</strong>
-              <small>{patientLanguage === "English" ? "INPUT: EN" : `INPUT: ${patientLanguage.toUpperCase()}`}</small>
+              <strong>{packetStep.label}</strong>
+              <small>{packetStep.detail}</small>
+              <div className="packet-progress" aria-hidden="true">
+                {processSteps.map((step, index) => (
+                  <i className={index <= currentStepIndex ? "active" : ""} key={step.id}></i>
+                ))}
+              </div>
+              <small>{patientLanguage === "English" ? "Input: English" : `Input: ${patientLanguage}`}</small>
             </div>
             <div className="signal-rail"><i></i><i></i><i></i><i></i></div>
             <div className="status mission-status" aria-live="polite"><span className="status-dot"></span><span>{apiStatus}</span></div>
