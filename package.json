@@ -1,0 +1,16 @@
+{
+  "scripts": {
+    "build:client": "esbuild src/App.jsx --bundle --format=iife --global-name=VisitReady --outfile=public/app.js --loader:.jsx=jsx --jsx=automatic",
+    "start": "npm run build:client && node server.js",
+    "dev": "npm run build:client && node server.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "vite": "^6.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
+  }
+}
