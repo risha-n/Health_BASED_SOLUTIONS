@@ -21848,9 +21848,6 @@ var VisitReady = (() => {
   function saveHistory(items) {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 20)));
   }
-  function sentenceList(text) {
-    return text.split(/[.!?]\s+/).map((item) => item.trim().replace(/[.!?]$/, "")).filter(Boolean);
-  }
   function localParse(text) {
     const lower = text.toLowerCase();
     const symptoms = [];
@@ -21907,27 +21904,46 @@ var VisitReady = (() => {
     ].forEach(([label, pattern]) => {
       if (pattern.test(lower)) relief.push(label);
     });
-    sentenceList(text).forEach((sentence) => {
-      if (/\b(monday|tuesday|wednesday|thursday|friday|yesterday|today|night|morning|after|around|week|days)\b/i.test(sentence)) {
-        timeline.push(sentence);
-      }
-      if (/\b(no fever|no blood|no bleeding|no black stool|no throwing up|not crushing chest pain|no trouble breathing|not short of breath|denies fever|denies chest pain|do not have a fever|don't have a fever|dont have a fever|does not have a fever|doesn't have a fever)\b/i.test(sentence)) {
-        redFlags.push(sentence);
-      }
+    const capitalize = (word) => word.replace(/^\w/, (char) => char.toUpperCase());
+    const daysFound = uniq(
+      ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].filter((day) => new RegExp(`\\b${day}\\b`, "i").test(lower)).map(capitalize)
+    );
+    const partsOfDay = uniq(["morning", "afternoon", "evening", "night"].filter((part) => new RegExp(`\\b${part}\\b`, "i").test(lower)));
+    const clockTimes = uniq((text.match(/\b\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)/gi) || []).map((match) => match.replace(/\s+/g, " ").trim()));
+    const durationMatch = lower.match(/\b(\d+)\s*(day|days|week|weeks|hour|hours|month|months)\b/);
+    let onset = null;
+    if (/\b(right now|just now|today|this morning|since this morning)\b/.test(lower)) onset = "started today";
+    else if (/\byesterday\b/.test(lower)) onset = "started yesterday";
+    else if (durationMatch) onset = `ongoing for ${durationMatch[1]} ${durationMatch[2]}`;
+    else if (daysFound.length) onset = `began around ${daysFound[0]}`;
+    const negativeMap = [
+      ["No fever", /\b(no fever|denies fever|no temperature|do not have a fever|don't have a fever|dont have a fever|does not have a fever|doesn't have a fever)\b/i],
+      ["No blood in stool", /\b(no blood in stool|no black stool)\b/i],
+      ["No vomiting", /\b(no throwing up|no vomiting|not throwing up)\b/i],
+      ["No severe chest pain", /\b(not crushing chest pain|no chest pain|denies chest pain)\b/i],
+      ["No shortness of breath", /\b(no trouble breathing|not short of breath|no shortness of breath)\b/i],
+      ["No bleeding", /\b(no bleeding)\b/i]
+    ];
+    negativeMap.forEach(([label, pattern]) => {
+      if (pattern.test(lower)) redFlags.push(label);
     });
-    if (severity) timeline.push(`Patient rated severity as ${severity[0]}`);
-    if (triggers.length) timeline.push(`Reported triggers/patterns: ${uniq(triggers).join(", ")}`);
-    if (relief.length) timeline.push(`Reported relief: ${uniq(relief).join(", ")}`);
+    if (onset) timeline.push(`Onset: ${onset}`);
+    if (daysFound.length) timeline.push(`Reported on ${daysFound.join(", ")}`);
+    if (partsOfDay.length) timeline.push(`Occurs in the ${partsOfDay.join(", ")}`);
+    if (clockTimes.length) timeline.push(`Noted around ${clockTimes.join(", ")}`);
+    if (severity) timeline.push(`Rated severity ${severity[0]}`);
+    if (triggers.length) timeline.push(`Triggers/patterns: ${uniq(triggers).join(", ")}`);
+    if (relief.length) timeline.push(`Relief: ${uniq(relief).join(", ")}`);
     const symptomText = uniq(symptoms).join(", ") || "symptoms not clearly specified";
-    const medText = uniq(meds).length ? ` Mentions ${uniq(meds).join(", ")}.` : " No medications or remedies clearly mentioned.";
-    const timelineText = timeline.length ? ` Pattern: ${timeline.slice(0, 2).join("; ")}.` : " Timing is not clearly stated.";
-    const negativeText = redFlags.length ? ` Pertinent negatives include: ${redFlags.join("; ")}.` : "";
+    const medText = uniq(meds).length ? ` Medications/remedies mentioned: ${uniq(meds).join(", ")}.` : " No medications or remedies clearly mentioned.";
+    const timelineText = timeline.length ? ` ${timeline.slice(0, 3).join(". ")}.` : " Timing is not clearly stated.";
+    const negativeText = redFlags.length ? ` Pertinent negatives: ${uniq(redFlags).join(", ")}.` : "";
     return {
       symptoms: uniq(symptoms).length ? uniq(symptoms) : ["Not clearly stated"],
       timeline: timeline.length ? timeline : ["Timing not clearly stated"],
       medications: meds.length ? uniq(meds) : ["Not mentioned"],
-      redFlags: redFlags.length ? redFlags : ["No red-flag details mentioned"],
-      hpi: `Patient reports ${symptomText}.${timelineText}${medText}${negativeText} Source statement: ${text.trim()}`,
+      redFlags: uniq(redFlags).length ? uniq(redFlags) : ["No red-flag details mentioned"],
+      hpi: `Patient reports ${symptomText}.${timelineText}${medText}${negativeText}`.replace(/\.{2,}/g, "."),
       doctorQuestions: [
         "When did symptoms first start, and are they getting better or worse?",
         "What triggers or relieves the symptoms?",

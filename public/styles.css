@@ -4072,3 +4072,23 @@ body {
     linear-gradient(135deg, #ffffff 0%, #f1faf1 45%, #e8f7ed 100%);
   background-size: 88px 88px, 88px 88px, auto, auto;
 }
+
+/* ── Doctor inbox masthead: simple header, no empty right panel ──── */
+.doctor-shell .masthead {
+  align-items: flex-start;
+  display: flex;
+  gap: 20px;
+  justify-content: space-between;
+  min-height: 0;
+  padding: 26px 30px;
+}
+
+.doctor-shell .masthead h1 {
+  font-size: 44px;
+  margin-bottom: 8px;
+}
+
+.doctor-shell .masthead .nav-link {
+  flex: 0 0 auto;
+  margin-top: 6px;
+}
